@@ -11,3 +11,8 @@ declare module 'neo-blessed' {
   import * as blessed from 'blessed';
   export = blessed;
 }
+
+declare module '@usebruno/node-machine-id' {
+  export function machineIdSync(original?: boolean): string;
+  export function machineId(original?: boolean): Promise<string>;
+}

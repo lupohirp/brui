@@ -5,6 +5,7 @@ import {
   collectionBruToJson,
   bruToEnvJsonV2
 } from '@usebruno/lang';
+import { BrunoSecretsManager } from './secrets';
 import {
   BrunoCollection,
   BrunoFolder,
@@ -185,6 +186,39 @@ export class CollectionParser {
           }
         }
       }
+    }
+
+    // Merge decrypted secrets from ~/.config/bruno/secrets.json
+    const decryptedSecrets = BrunoSecretsManager.loadCollectionSecrets(this.collectionRoot);
+    for (const env of environments) {
+      if (decryptedSecrets[env.name]) {
+        for (const [secKey, secVal] of Object.entries(decryptedSecrets[env.name])) {
+          if (secVal) {
+            env.variables[secKey] = secVal;
+          }
+        }
+      }
+    }
+
+    // Merge .env file if present at collection root
+    const dotEnvPath = path.join(this.collectionRoot, '.env');
+    if (fs.existsSync(dotEnvPath)) {
+      try {
+        const lines = fs.readFileSync(dotEnvPath, 'utf8').split('\n');
+        for (const line of lines) {
+          const trimmed = line.trim();
+          if (trimmed && !trimmed.startsWith('#') && trimmed.includes('=')) {
+            const eqIdx = trimmed.indexOf('=');
+            const k = trimmed.slice(0, eqIdx).trim();
+            const v = trimmed.slice(eqIdx + 1).trim();
+            for (const env of environments) {
+              if (!env.variables[k]) {
+                env.variables[k] = v;
+              }
+            }
+          }
+        }
+      } catch {}
     }
 
     // Recursively parse requests and folders

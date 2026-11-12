@@ -42,18 +42,25 @@ export class BruiApp {
   private statusBar!: blessed.Widgets.BoxElement;
 
   private collectionModal?: blessed.Widgets.BoxElement;
+  private envModal?: blessed.Widgets.BoxElement;
   private isRunning: boolean = false;
 
-  constructor(collectionPath: string, themeName: string = 'Catppuccin Mocha') {
+  constructor(collectionPath: string, themeName: string = 'Catppuccin Mocha', initialEnv?: string) {
     this.collectionPath = path.resolve(collectionPath);
     this.themeManager = new ThemeManager(themeName);
-    this.loadCollection(this.collectionPath);
+    this.loadCollection(this.collectionPath, initialEnv);
   }
 
-  private loadCollection(targetPath: string) {
+  private loadCollection(targetPath: string, initialEnv?: string) {
     this.collectionPath = targetPath;
     this.parser = new CollectionParser(this.collectionPath);
     this.collection = this.parser.parse();
+    if (initialEnv) {
+      const found = this.collection.environments.find(e => e.name.toLowerCase() === initialEnv.toLowerCase());
+      if (found) {
+        this.collection.activeEnvironment = found.name;
+      }
+    }
     this.scriptRunner = new ScriptRunner(this.collection, this.parser.requestMap);
 
     // Expand top-level folders by default
@@ -619,9 +626,9 @@ export class BruiApp {
       this.updateStatusBar(`Theme: ${newTheme.name}`);
     });
 
-    // Cycle Environment
+    // Environment Modal
     this.screen.key(['e', 'E'], () => {
-      this.cycleEnvironment();
+      this.openEnvironmentModal();
     });
 
     // Number keys for request tabs
@@ -752,18 +759,154 @@ export class BruiApp {
     this.screen.render();
   }
 
-  private cycleEnvironment() {
+  private openEnvironmentModal() {
+    if (this.envModal) return;
+
+    const t = this.getTheme();
     if (this.collection.environments.length === 0) {
-      this.updateStatusBar('No environments configured');
+      this.updateStatusBar('No environments configured for this collection');
       return;
     }
-    const envs = this.collection.environments.map(e => e.name);
-    const curIdx = envs.indexOf(this.collection.activeEnvironment || '');
-    const nextIdx = (curIdx + 1) % envs.length;
-    this.collection.activeEnvironment = envs[nextIdx];
-    this.updateHeader();
-    this.updateRequestView();
-    this.updateStatusBar(`Environment switched to: [${envs[nextIdx]}]`);
+
+    this.envModal = blessed.box({
+      parent: this.screen,
+      top: 'center',
+      left: 'center',
+      width: '75%',
+      height: '65%',
+      border: { type: 'line' },
+      style: {
+        bg: t.surface,
+        fg: t.fg,
+        border: { fg: t.accent }
+      },
+      tags: true,
+      mouse: true
+    });
+
+    // Title
+    blessed.box({
+      parent: this.envModal,
+      top: 0,
+      left: 1,
+      right: 1,
+      height: 2,
+      content: `{bold}{${t.accent}-fg}🌍 Select Environment & Inspect Variables{/} {${t.subtext}-fg}(click or Enter to activate, Esc to close){/}`,
+      tags: true
+    });
+
+    // Left List of environments
+    const envList = blessed.list({
+      parent: this.envModal,
+      top: 2,
+      left: 1,
+      width: '35%',
+      bottom: 1,
+      border: { type: 'line' },
+      keys: true,
+      vi: true,
+      mouse: true,
+      tags: true,
+      style: {
+        bg: t.surface,
+        fg: t.fg,
+        border: { fg: t.border },
+        selected: { bg: t.selection, fg: t.selectionFg, bold: true },
+        item: { hover: { bg: t.surfaceHover } }
+      },
+      items: this.collection.environments.map(e => {
+        const isCurrent = e.name === this.collection.activeEnvironment;
+        const icon = isCurrent ? `{${t.get}-fg}● (active){/} ` : '  ';
+        const varCount = Object.keys(e.variables).length;
+        return `${icon}{bold}${e.name}{/} {${t.subtext}-fg}(${varCount}){/}`;
+      })
+    });
+
+    // Right Preview of variables
+    const varsBox = blessed.box({
+      parent: this.envModal,
+      top: 2,
+      left: '36%',
+      right: 1,
+      bottom: 1,
+      border: { type: 'line' },
+      scrollable: true,
+      alwaysScroll: true,
+      mouse: true,
+      tags: true,
+      style: {
+        bg: t.bg,
+        fg: t.fg,
+        border: { fg: t.border }
+      },
+      scrollbar: {
+        ch: ' ',
+        track: { bg: t.surface },
+        style: { inverse: true }
+      }
+    });
+
+    const updateVarsPreview = (envIndex: number) => {
+      const selectedEnv = this.collection.environments[envIndex];
+      if (!selectedEnv) {
+        varsBox.setContent('{${t.subtext}-fg}No variables.{/}');
+        return;
+      }
+      const entries = Object.entries(selectedEnv.variables);
+      if (entries.length === 0) {
+        varsBox.setContent(`{${t.subtext}-fg}Environment "${selectedEnv.name}" has no variables.{/}`);
+        return;
+      }
+      const lines = entries.map(([k, v]) => {
+        // If it looks like a sensitive secret token, mask partially
+        let displayVal = v;
+        if (k.toLowerCase().includes('secret') || k.toLowerCase().includes('password')) {
+          if (v && v.length > 6) {
+            displayVal = v.slice(0, 3) + '••••••••' + v.slice(-3);
+          }
+        }
+        return `{bold}{${t.put}-fg}${k}{/}: {${t.get}-fg}${displayVal || '{#6c7086-fg}(empty){/}'}{/}`;
+      });
+      varsBox.setContent(`{bold}{${t.options}-fg}Variables in [${selectedEnv.name}]:{/}\n\n` + lines.join('\n'));
+      this.screen.render();
+    };
+
+    // Initial preview
+    const activeIdx = this.collection.environments.findIndex(e => e.name === this.collection.activeEnvironment);
+    const startIdx = activeIdx !== -1 ? activeIdx : 0;
+    (envList as any).select(startIdx);
+    updateVarsPreview(startIdx);
+
+    envList.on('select item', (_item: any, index: number) => {
+      updateVarsPreview(index);
+    });
+
+    const closeEnvModal = () => {
+      if (this.envModal) {
+        this.envModal.destroy();
+        this.envModal = undefined;
+        this.sidebarList.focus();
+        this.screen.render();
+      }
+    };
+
+    envList.on('select', (_item: any, index: number) => {
+      const targetEnv = this.collection.environments[index];
+      if (targetEnv) {
+        this.collection.activeEnvironment = targetEnv.name;
+        this.updateHeader();
+        this.updateRequestView();
+        this.updateStatusBar(`Active environment set to: [${targetEnv.name}]`);
+      }
+      closeEnvModal();
+    });
+
+    this.screen.onceKey('escape', () => {
+      closeEnvModal();
+    });
+
+    envList.focus();
+    this.screen.render();
   }
 
   private async sendActiveRequest() {

@@ -88,7 +88,7 @@ async function main() {
   }
 
   try {
-    const app = new BruiApp(resolvedPath, themeName);
+    const app = new BruiApp(resolvedPath, themeName, initialEnv);
     app.start();
   } catch (err: any) {
     console.error(`\x1b[31mError launching brui: ${err.message}\x1b[0m`);

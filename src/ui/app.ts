@@ -1,7 +1,7 @@
 import blessed from 'neo-blessed';
 import * as path from 'node:path';
 import * as fs from 'node:fs';
-import { bruToJsonV2, jsonToBruV2 } from '@usebruno/lang';
+import { bruToJsonV2, jsonToBruV2, collectionBruToJson, jsonToCollectionBru } from '@usebruno/lang';
 import { BrunoCollection, BrunoFolder, BrunoRequest, HttpResponse, ConsoleLogEntry, ThemeColors, OAuth2Config } from '../types';
 import { ThemeManager } from '../themes';
 import { CollectionParser, DiscoveredCollection } from '../core/parser';
@@ -39,7 +39,7 @@ export class BruiApp {
 
   private modifiedRequests: Set<string> = new Set();
   private isUpdatingSidebar: boolean = false;
-  private inlineTarget: 'none' | 'url' | 'content' = 'none';
+  private inlineTarget: 'none' | 'url' | 'content' | 'coll-headers' = 'none';
   private inlineText: string = '';
   private inlineCursor: number = 0;
 
@@ -577,6 +577,7 @@ export class BruiApp {
     };
 
     const isEditingContent = this.inlineTarget === 'content';
+    const isEditingCollHeaders = this.inlineTarget === 'coll-headers';
     let content = '';
     if (this.activeRequestTab === 'headers') {
       const rawHeaders = isEditingContent
@@ -590,16 +591,18 @@ export class BruiApp {
         true
       );
 
-      if (collHeaders.length > 0) {
-        content += `\n\n {${t.subtext}-fg}--- Inherited from collection.bru (${collHeaders.length}) ---{/}\n`;
-        content += collHeaders.map(h => {
-          const rawColored = Interpolator.highlightVariables(h.value, this.collection, t.accent, t.delete);
-          const resPreview = h.value.includes('{{')
-            ? `  {${t.subtext}-fg}(-> ${Interpolator.interpolateWithColor(h.value, this.collection, t.accent, t.delete)}{${t.subtext}-fg}){/}`
-            : '';
-          return ` • {${t.subtext}-fg}${h.name}:{/} ${rawColored}${resPreview}`;
-        }).join('\n');
-      }
+      const rawCollHeaders = isEditingCollHeaders
+        ? this.inlineText
+        : (this.collection.collectionHeaders || []).filter(h => h.enabled !== false).map(h => `${h.name}: ${h.value}`).join('\n');
+
+      content += `\n\n {bold}{${t.accent}-fg}--- Inherited from collection.bru (${collHeaders.length}) ---{/} {${t.subtext}-fg}[Click here to edit collection headers]{/}\n`;
+      content += renderInlineBlock(
+        rawCollHeaders,
+        isEditingCollHeaders,
+        isEditingCollHeaders ? this.inlineCursor : 0,
+        'Header-Name: value',
+        true
+      );
     } else if (this.activeRequestTab === 'params') {
       const rawParams = isEditingContent
         ? this.inlineText
@@ -922,7 +925,22 @@ export class BruiApp {
     this.renderSidebar();
   }
 
-  private activateInlineEdit(target: 'url' | 'content', clickRow?: number, clickCol?: number) {
+  private applyCollectionHeadersText(text: string) {
+    this.collection.collectionHeaders = text
+      .split(/\r?\n/)
+      .filter(l => l.trim().length > 0)
+      .map(l => {
+        const sep = l.indexOf(':');
+        if (sep === -1) return { name: l.trim(), value: '', enabled: true };
+        return {
+          name: l.slice(0, sep).trim(),
+          value: l.slice(sep + 1).trim(),
+          enabled: true
+        };
+      });
+  }
+
+  private activateInlineEdit(target: 'url' | 'content' | 'coll-headers', clickRow?: number, clickCol?: number) {
     const req = this.selectedRequest;
     if (!req) return;
     if (target === 'content' && this.activeRequestTab === 'auth') return;
@@ -936,6 +954,24 @@ export class BruiApp {
         ? Math.max(0, Math.min(this.inlineText.length, clickCol))
         : this.inlineText.length;
       this.requestHeaderBox.focus();
+    } else if (target === 'coll-headers') {
+      this.inlineText = (this.collection.collectionHeaders || [])
+        .filter(h => h.enabled !== false)
+        .map(h => `${h.name}: ${h.value}`)
+        .join('\n');
+      if (clickRow !== undefined && clickCol !== undefined) {
+        const lines = this.inlineText.split('\n');
+        const r = Math.max(0, Math.min(lines.length - 1, clickRow));
+        const c = Math.max(0, Math.min(lines[r].length, clickCol));
+        let offset = 0;
+        for (let i = 0; i < r; i++) {
+          offset += lines[i].length + 1;
+        }
+        this.inlineCursor = offset + c;
+      } else {
+        this.inlineCursor = this.inlineText.length;
+      }
+      this.requestContentBox.focus();
     } else {
       if (this.activeRequestTab === 'body' && req.bodyType === 'none') {
         req.bodyType = 'json';
@@ -962,7 +998,8 @@ export class BruiApp {
     this.requestPane.style.border.fg = t.borderFocus;
     this.sidebarList.style.border.fg = t.border;
     this.updateRequestView();
-    this.updateStatusBar(`Editing ${target === 'url' ? 'URL' : this.activeRequestTab} inline — Type directly | [Ctrl+S] Save .bru | [Esc] Done`);
+    const targetLabel = target === 'url' ? 'URL' : target === 'coll-headers' ? 'collection.bru Headers' : this.activeRequestTab;
+    this.updateStatusBar(`Editing ${targetLabel} inline — Type directly | [Ctrl+S] Save | [Esc] Done`);
   }
 
   private deactivateInlineEdit() {
@@ -1136,7 +1173,11 @@ export class BruiApp {
         } else {
           this.inlineText = this.inlineText.slice(0, this.inlineCursor) + '\n' + this.inlineText.slice(this.inlineCursor);
           this.inlineCursor += 1;
-          this.applyTabEditableText(req, this.inlineText);
+          if (this.inlineTarget === 'coll-headers') {
+            this.applyCollectionHeadersText(this.inlineText);
+          } else {
+            this.applyTabEditableText(req, this.inlineText);
+          }
           this.updateRequestView();
         }
         return;
@@ -1150,6 +1191,8 @@ export class BruiApp {
             req.url = this.inlineText;
             this.modifiedRequests.add(req.id);
             this.renderSidebar();
+          } else if (this.inlineTarget === 'coll-headers') {
+            this.applyCollectionHeadersText(this.inlineText);
           } else {
             this.applyTabEditableText(req, this.inlineText);
           }
@@ -1165,6 +1208,8 @@ export class BruiApp {
             req.url = this.inlineText;
             this.modifiedRequests.add(req.id);
             this.renderSidebar();
+          } else if (this.inlineTarget === 'coll-headers') {
+            this.applyCollectionHeadersText(this.inlineText);
           } else {
             this.applyTabEditableText(req, this.inlineText);
           }
@@ -1234,6 +1279,8 @@ export class BruiApp {
           req.url = this.inlineText;
           this.modifiedRequests.add(req.id);
           this.renderSidebar();
+        } else if (this.inlineTarget === 'coll-headers') {
+          this.applyCollectionHeadersText(this.inlineText);
         } else {
           this.applyTabEditableText(req, this.inlineText);
         }
@@ -1330,7 +1377,23 @@ export class BruiApp {
       const lines = (this.requestContentBox.getContent() || '').split('\n');
       const clickedLine = lines[relY] || '';
 
-      if (this.activeRequestTab === 'headers' || this.activeRequestTab === 'params' ||
+      if (this.activeRequestTab === 'headers') {
+        const rawReqLines = (req.headers || []).map(h => `${h.name}: ${h.value}`);
+        const reqLinesCount = Math.max(1, rawReqLines.length);
+        const collHeaderSepRow = reqLinesCount + 1; // 1 blank line + 1 separator header
+        if (relY > collHeaderSepRow) {
+          const collRow = relY - (collHeaderSepRow + 1);
+          this.activateInlineEdit('coll-headers', collRow, Math.max(0, relX - 6));
+          return;
+        } else if (relY === collHeaderSepRow) {
+          this.activateInlineEdit('coll-headers', 0, 0);
+          return;
+        }
+        this.activateInlineEdit('content', relY, Math.max(0, relX - 6));
+        return;
+      }
+
+      if (this.activeRequestTab === 'params' ||
           this.activeRequestTab === 'pre-script' || this.activeRequestTab === 'post-script' ||
           this.activeRequestTab === 'docs') {
         this.activateInlineEdit('content', relY, Math.max(0, relX - 6));
@@ -2009,6 +2072,10 @@ export class BruiApp {
   }
 
   private saveActiveRequest() {
+    if (this.inlineTarget === 'coll-headers') {
+      this.saveCollectionHeaders();
+      return;
+    }
     const req = this.selectedRequest;
     if (!req) return;
     try {
@@ -2120,6 +2187,10 @@ export class BruiApp {
   }
 
   private revertActiveRequest() {
+    if (this.inlineTarget === 'coll-headers') {
+      this.revertCollectionHeaders();
+      return;
+    }
     const req = this.selectedRequest;
     if (!req) return;
     try {
@@ -2155,6 +2226,62 @@ export class BruiApp {
       this.updateStatusBar(`Reverted ${req.name} from ${path.basename(req.filePath)}`);
     } catch (err: any) {
       this.updateStatusBar(`Revert error: ${err.message}`);
+    }
+  }
+
+  private saveCollectionHeaders() {
+    const collBruPath = path.join(this.collectionPath, 'collection.bru');
+    try {
+      let json: any = {};
+      if (fs.existsSync(collBruPath)) {
+        const raw = fs.readFileSync(collBruPath, 'utf8');
+        json = collectionBruToJson(raw) || {};
+      }
+      if (!json.meta) {
+        json.meta = { name: this.collection.name, type: 'collection' };
+      }
+      json.headers = (this.collection.collectionHeaders || []).map(h => ({
+        name: h.name,
+        value: h.value,
+        enabled: h.enabled !== false
+      }));
+
+      const updated = jsonToCollectionBru(json);
+      fs.writeFileSync(collBruPath, updated, 'utf8');
+      this.updateRequestView();
+      this.updateStatusBar(`Saved collection headers to collection.bru`);
+    } catch (err: any) {
+      this.updateStatusBar(`Save error (collection.bru): ${err.message}`);
+    }
+  }
+
+  private revertCollectionHeaders() {
+    const collBruPath = path.join(this.collectionPath, 'collection.bru');
+    try {
+      if (fs.existsSync(collBruPath)) {
+        const raw = fs.readFileSync(collBruPath, 'utf8');
+        const parsed = collectionBruToJson(raw) || {};
+        if (parsed.headers && Array.isArray(parsed.headers)) {
+          this.collection.collectionHeaders = parsed.headers.map((h: any) => ({
+            name: h.name || '',
+            value: h.value || '',
+            enabled: h.enabled !== false
+          }));
+        } else {
+          this.collection.collectionHeaders = [];
+        }
+      }
+      if (this.inlineTarget === 'coll-headers') {
+        this.inlineText = (this.collection.collectionHeaders || [])
+          .filter(h => h.enabled !== false)
+          .map(h => `${h.name}: ${h.value}`)
+          .join('\n');
+        this.inlineCursor = this.inlineText.length;
+      }
+      this.updateRequestView();
+      this.updateStatusBar(`Reverted collection headers from collection.bru`);
+    } catch (err: any) {
+      this.updateStatusBar(`Revert error (collection.bru): ${err.message}`);
     }
   }
 

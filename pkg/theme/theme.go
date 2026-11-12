@@ -38,45 +38,45 @@ var Mocha = Theme{
 	Accent:      "#cba6f7", // Mauve
 	Subtext:     "#a6adc8",
 	Get:         "#a6e3a1", // Green
-	Post:        "#f9e2af", // Yellow
+	Post:        "#fab387", // Peach
 	Put:         "#89b4fa", // Blue
-	Patch:       "#fab387", // Peach
+	Patch:       "#94e2d5", // Teal
 	Delete:      "#f38ba8", // Red
 	Success:     "#a6e3a1",
-	Warn:        "#fab387",
+	Warn:        "#f9e2af",
 	Error:       "#f38ba8",
 }
 
 // Catppuccin Macchiato
 var Macchiato = Theme{
 	Name:        "Catppuccin Macchiato",
-	Bg:          "#1e2030",
+	Bg:          "#24273a",
 	Fg:          "#cad3f5",
 	Surface:     "#363a4f",
-	ModalBg:     "#181926",
+	ModalBg:     "#1e2030",
 	Border:      "#5b6078",
-	BorderFocus: "#8aadf4",
+	BorderFocus: "#c6a0f6",
 	Selection:   "#494d64",
 	SelectionFg: "#cad3f5",
-	Accent:      "#8aadf4",
+	Accent:      "#c6a0f6",
 	Subtext:     "#a5adcb",
 	Get:         "#a6da95",
-	Post:        "#eed49f",
+	Post:        "#f5a97f",
 	Put:         "#8aadf4",
-	Patch:       "#f5a97f",
+	Patch:       "#8bd5ca",
 	Delete:      "#ed8796",
 	Success:     "#a6da95",
-	Warn:        "#f5a97f",
+	Warn:        "#eed49f",
 	Error:       "#ed8796",
 }
 
 // Catppuccin Frappé
 var Frappe = Theme{
 	Name:        "Catppuccin Frappé",
-	Bg:          "#292c3c",
+	Bg:          "#303446",
 	Fg:          "#c6d0f5",
-	Surface:     "#3b3f52",
-	ModalBg:     "#232634",
+	Surface:     "#414559",
+	ModalBg:     "#292c3c",
 	Border:      "#626880",
 	BorderFocus: "#ca9ee6",
 	Selection:   "#51576d",
@@ -84,12 +84,12 @@ var Frappe = Theme{
 	Accent:      "#ca9ee6",
 	Subtext:     "#a5adce",
 	Get:         "#a6d189",
-	Post:        "#e5c890",
+	Post:        "#ef9f76",
 	Put:         "#8caaee",
-	Patch:       "#ef9f76",
+	Patch:       "#81c8be",
 	Delete:      "#e78284",
 	Success:     "#a6d189",
-	Warn:        "#ef9f76",
+	Warn:        "#e5c890",
 	Error:       "#e78284",
 }
 

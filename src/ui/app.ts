@@ -185,13 +185,13 @@ export class BruiApp {
   private buildLayout() {
     const theme = this.getTheme();
 
-    // 1. Top Header (Height 5 -> 3 inner lines for 6x9 pixel-art Bruno dog + controls)
+    // 1. Top Header (Height 4 -> 2 clean inner lines: Title on line 1, Collection & Env on line 2)
     this.headerBox = blessed.box({
       parent: this.screen,
       top: 0,
       left: 0,
       width: '100%',
-      height: 5,
+      height: 4,
       tags: true,
       border: { type: 'line' },
       mouse: true
@@ -200,7 +200,7 @@ export class BruiApp {
     // 2. Left Sidebar (Tree view with folders & requests)
     this.sidebarList = blessed.list({
       parent: this.screen,
-      top: 5,
+      top: 4,
       left: 0,
       width: '32%',
       bottom: 2,
@@ -220,7 +220,7 @@ export class BruiApp {
     // 3. Request Pane (Top Right)
     this.requestPane = blessed.box({
       parent: this.screen,
-      top: 5,
+      top: 4,
       left: '32%',
       width: '68%',
       bottom: '48%',
@@ -384,28 +384,12 @@ export class BruiApp {
   private updateHeader() {
     const t = this.getTheme();
     const envName = this.collection.activeEnvironment || 'None';
-    const authStatus = this.collection.runtimeVariables['access_token']
-      ? `{${t.get}-fg}[OK: Auth]{/}`
-      : `{${t.subtext}-fg}[--: No Auth]{/}`;
 
-    // 6x9 half-block pixel-art sprite of Bruno the Golden Retriever (3 rows x 9 cols):
-    // E = floppy ears (#c97a2b), Y = gold fur (#f4aa42), K = eyes/nose (#11111b), R = tongue (#ea5a47)
-    const E = '#c97a2b';
-    const Y = '#f4aa42';
-    const K = '#11111b';
-    const R = '#ea5a47';
+    const line1 = ` {bold}{#f4aa42-fg}BRUI{/} {${t.subtext}-fg}- Bruno Terminal Client{/}`;
+    const line2 = ` {${t.subtext}-fg}Collection [C]:{/} {bold}{${t.put}-fg}[${this.collection.name}]{/}   ` +
+                  `{${t.subtext}-fg}Env [E]:{/} {bold}{${t.options}-fg}[${envName}]{/}`;
 
-    const dog1 = `{${E}-fg}▄█{/}{${Y}-fg}█████{/}{${E}-fg}█▄{/}`;
-    const dog2 = `{${E}-fg}▀{/}{${E}-fg}{${Y}-bg}▀{/}{${K}-fg}{${Y}-bg}▀{/}{${t.bg}-bg}{${Y}-fg}█{/}{${Y}-fg}{${K}-bg}▀{/}{${t.bg}-bg}{${Y}-fg}█{/}{${K}-fg}{${Y}-bg}▀{/}{${E}-fg}{${Y}-bg}▀{/}{${t.bg}-bg}{${E}-fg}▀{/}`;
-    const dog3 = `  {${Y}-fg}▀▀{/}{${R}-fg}█{/}{${Y}-fg}▀▀{/}  `;
-
-    const line1 = ` ${dog1}  {bold}{#f4aa42-fg}BRUI{/} {${t.subtext}-fg}- Bruno Terminal Client{/}{right}{${t.subtext}-fg}Theme [T]:{/} {bold}{${t.put}-fg}[${t.name}]{/} `;
-    const line2 = ` ${dog2}  {${t.subtext}-fg}Collection [C]:{/} {bold}{${t.put}-fg}[${this.collection.name}]{/}   ` +
-                  `{${t.subtext}-fg}Env [E]:{/} {bold}{${t.options}-fg}[${envName}]{/}   ` +
-                  `{${t.subtext}-fg}Auth [A]:{/} ${authStatus}`;
-    const line3 = ` ${dog3}  {${t.subtext}-fg}[Space] Send  [U] URL  [I] Edit Tab  [S] Save .bru  [R] Revert  [O] OAuth2{/}`;
-
-    this.headerBox.setContent(`${line1}\n${line2}\n${line3}`);
+    this.headerBox.setContent(`${line1}\n${line2}`);
   }
 
   private renderSidebar() {
@@ -819,7 +803,7 @@ export class BruiApp {
       }
     });
 
-    // 3. Mouse click on Header -> Open Collection, Env, Auth, or Theme based on click position
+    // 3. Mouse click on Header -> Open Collection or Env based on click position
     this.headerBox.on('click', (data: any) => {
       if (this.isModalOpen()) return;
       const pos = (this.headerBox as any).lpos;
@@ -829,35 +813,17 @@ export class BruiApp {
       }
       const relX = data.x - (pos.xi + 1);
       const relY = data.y - (pos.yi + 1);
-      const width = (pos.xl - pos.xi) - 2;
-
-      if (relY === 0 && relX >= width - 35) {
-        const newTheme = this.themeManager.cycle();
-        this.applyTheme();
-        this.renderSidebar();
-        this.updateRequestView();
-        this.updateResponseView();
-        this.updateStatusBar(`Theme: ${newTheme.name}`);
-        return;
-      }
 
       if (relY === 1) {
-        const collPrefix = 12 + 16 + this.collection.name.length + 2;
-        const envName = this.collection.activeEnvironment || 'None';
-        const envStart = collPrefix + 3;
-        const envEnd = envStart + 9 + envName.length + 2;
-
-        if (relX >= envStart && relX <= envEnd) {
+        // Line 2: " Collection [C]: [name]   Env [E]: [env]"
+        const collEnd = 1 + 16 + 1 + this.collection.name.length + 1;
+        const envStart = collEnd + 3;
+        if (relX >= envStart) {
           this.openEnvironmentModal();
           return;
         }
-        if (relX > envEnd) {
-          this.openAuthManagerModal();
-          return;
-        }
+        this.openCollectionModal();
       }
-
-      this.openCollectionModal();
     });
 
     // 3b. Mouse click on Request Header Box -> Method, URL, [Edit URL], [Edit], [Save], [Revert]

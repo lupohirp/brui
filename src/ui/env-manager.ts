@@ -131,12 +131,12 @@ export class EnvironmentManagerModal {
         fg: t.fg,
         border: { fg: t.borderFocus },
         selected: { bg: t.selection, fg: t.selectionFg, bold: true },
-        item: { hover: { bg: t.surfaceHover } }
+        item: { bg: t.surface, fg: t.fg }
       },
       scrollbar: {
         ch: ' ',
         track: { bg: t.surface },
-        style: { inverse: true }
+        style: { bg: t.selection }
       }
     });
 
@@ -159,12 +159,12 @@ export class EnvironmentManagerModal {
         fg: t.fg,
         border: { fg: t.border },
         selected: { bg: t.selection, fg: t.selectionFg, bold: true },
-        item: { hover: { bg: t.surfaceHover } }
+        item: { bg: t.surface, fg: t.fg }
       },
       scrollbar: {
         ch: ' ',
         track: { bg: t.surface },
-        style: { inverse: true }
+        style: { bg: t.selection }
       }
     });
 

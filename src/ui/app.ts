@@ -195,8 +195,8 @@ export class BruiApp {
       scrollable: true,
       scrollbar: {
         ch: ' ',
-        track: { bg: theme.surface },
-        style: { inverse: true }
+        track: { bg: theme.bg },
+        style: { bg: theme.selection }
       }
     });
 
@@ -234,8 +234,8 @@ export class BruiApp {
       alwaysScroll: true,
       scrollbar: {
         ch: ' ',
-        track: { bg: theme.surface },
-        style: { inverse: true }
+        track: { bg: theme.bg },
+        style: { bg: theme.selection }
       }
     });
 
@@ -283,8 +283,8 @@ export class BruiApp {
       alwaysScroll: true,
       scrollbar: {
         ch: ' ',
-        track: { bg: theme.surface },
-        style: { inverse: true }
+        track: { bg: theme.bg },
+        style: { bg: theme.selection }
       }
     });
 
@@ -305,9 +305,6 @@ export class BruiApp {
   private applyTheme() {
     const t = this.getTheme();
 
-    this.screen.program.bg(t.bg);
-    this.screen.program.fg(t.fg);
-
     this.headerBox.style.bg = t.bg;
     this.headerBox.style.fg = t.fg;
     this.headerBox.style.border.fg = t.border;
@@ -321,19 +318,31 @@ export class BruiApp {
       bold: true
     };
     this.sidebarList.style.item = {
-      hover: { bg: t.surfaceHover }
+      bg: t.bg,
+      fg: t.fg
     };
 
     this.requestPane.style.bg = t.bg;
     this.requestPane.style.fg = t.fg;
     this.requestPane.style.border.fg = t.border;
-    this.requestContentBox.style.bg = t.surface;
+
+    this.requestTabsBox.style.bg = t.bg;
+    this.requestTabsBox.style.fg = t.fg;
+
+    this.requestContentBox.style.bg = t.bg;
     this.requestContentBox.style.fg = t.fg;
 
     this.responsePane.style.bg = t.bg;
     this.responsePane.style.fg = t.fg;
     this.responsePane.style.border.fg = t.border;
-    this.responseContentBox.style.bg = t.surface;
+
+    this.responseHeaderBox.style.bg = t.bg;
+    this.responseHeaderBox.style.fg = t.fg;
+
+    this.responseTabsBox.style.bg = t.bg;
+    this.responseTabsBox.style.fg = t.fg;
+
+    this.responseContentBox.style.bg = t.bg;
     this.responseContentBox.style.fg = t.fg;
 
     this.statusBar.style.bg = t.surface;
@@ -873,7 +882,7 @@ export class BruiApp {
         bg: t.surface,
         fg: t.fg,
         selected: { bg: t.selection, fg: t.selectionFg, bold: true },
-        item: { hover: { bg: t.surfaceHover } }
+        item: { bg: t.surface, fg: t.fg }
       },
       items: discovered.map(c => {
         const isCurrent = c.path === this.collectionPath;

@@ -4,6 +4,7 @@ import (
 	"strings"
 	"testing"
 
+	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/lupohirp/brui/pkg/bru"
 )
@@ -154,5 +155,126 @@ func TestModelAutocomplete(t *testing.T) {
 	m.acceptAutocomplete()
 	if m.URLEditText != "{{FQDN-Reset}}" {
 		t.Errorf("Expected accepted URL to be '{{FQDN-Reset}}', got '%s'", m.URLEditText)
+	}
+}
+
+func TestMouseInteractions(t *testing.T) {
+	coll := &bru.BrunoCollection{
+		Name:              "APIGEE",
+		ActiveEnvironment: "Local",
+		Environments: []*bru.BrunoEnvironment{
+			{Name: "Local", Variables: map[string]string{"A": "1"}},
+			{Name: "Staging", Variables: map[string]string{"A": "2"}},
+		},
+		Folders: []*bru.BrunoFolder{
+			{
+				ID:   "f1",
+				Name: "Auth",
+				Requests: []*bru.BrunoRequest{
+					{ID: "r1", Name: "Login", Method: bru.MethodPost, URL: "http://api.com/login"},
+					{ID: "r2", Name: "Reset", Method: bru.MethodPut, URL: "http://api.com/reset"},
+				},
+			},
+		},
+	}
+
+	m := NewModel(coll)
+	m.Width = 100
+	m.Height = 30
+
+	// 1. Click on folder to collapse
+	folderClick := tea.MouseMsg{
+		X:      5,
+		Y:      6, // Line 6 is folder row
+		Action: tea.MouseActionPress,
+		Button: tea.MouseButtonLeft,
+	}
+	newM, _ := m.Update(folderClick)
+	m = newM.(Model)
+	if m.ExpandedFolders["f1"] {
+		t.Errorf("Expected folder f1 to be collapsed after click, but was expanded")
+	}
+
+	// Click again to expand
+	newM, _ = m.Update(folderClick)
+	m = newM.(Model)
+	if !m.ExpandedFolders["f1"] {
+		t.Errorf("Expected folder f1 to be expanded after second click")
+	}
+
+	// 2. Click on second request (row 2 -> Y=8)
+	req2Click := tea.MouseMsg{
+		X:      5,
+		Y:      8,
+		Action: tea.MouseActionPress,
+		Button: tea.MouseButtonLeft,
+	}
+	newM, _ = m.Update(req2Click)
+	m = newM.(Model)
+	if m.SelectedRequest == nil || m.SelectedRequest.ID != "r2" {
+		t.Errorf("Expected selected request to be r2, got %v", m.SelectedRequest)
+	}
+
+	// 3. Click on Method badge in Request pane (X: sidebarW+2 = 32, Y: 6)
+	methodClick := tea.MouseMsg{
+		X:      32,
+		Y:      6,
+		Action: tea.MouseActionPress,
+		Button: tea.MouseButtonLeft,
+	}
+	curMethod := m.SelectedRequest.Method
+	newM, _ = m.Update(methodClick)
+	m = newM.(Model)
+	if m.SelectedRequest.Method == curMethod {
+		t.Errorf("Expected method to cycle after clicking method badge")
+	}
+
+	// 4. Click on URL to edit (X: 45, Y: 6)
+	urlClick := tea.MouseMsg{
+		X:      45,
+		Y:      6,
+		Action: tea.MouseActionPress,
+		Button: tea.MouseButtonLeft,
+	}
+	newM, _ = m.Update(urlClick)
+	m = newM.(Model)
+	if !m.IsEditingURL {
+		t.Errorf("Expected IsEditingURL to be true after clicking URL")
+	}
+
+	// 5. Click on Tab 3 (Body) (X: sidebarW + 35 = 65, Y: 7)
+	tabClick := tea.MouseMsg{
+		X:      65,
+		Y:      7,
+		Action: tea.MouseActionPress,
+		Button: tea.MouseButtonLeft,
+	}
+	newM, _ = m.Update(tabClick)
+	m = newM.(Model)
+	if m.ActiveTab != "body" {
+		t.Errorf("Expected ActiveTab to be 'body' after click, got '%s'", m.ActiveTab)
+	}
+
+	// 6. Mouse wheel scroll on sidebar
+	sidebarWheelDown := tea.MouseMsg{
+		X:      10,
+		Y:      10,
+		Button: tea.MouseButtonWheelDown,
+	}
+	newM, _ = m.Update(sidebarWheelDown)
+	m = newM.(Model)
+
+	// 7. Click on Env button in status bar (X: 35, Y: 29)
+	envClick := tea.MouseMsg{
+		X:      35,
+		Y:      29,
+		Action: tea.MouseActionPress,
+		Button: tea.MouseButtonLeft,
+	}
+	prevEnv := m.Coll.ActiveEnvironment
+	newM, _ = m.Update(envClick)
+	m = newM.(Model)
+	if m.Coll.ActiveEnvironment == prevEnv {
+		t.Errorf("Expected ActiveEnvironment to cycle after clicking Env in status bar")
 	}
 }

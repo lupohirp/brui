@@ -134,6 +134,34 @@ func (m *Model) rebuildTree() {
 	m.selectCurrentItem()
 }
 
+func (m Model) layoutDimensions() (sidebarW, contentW, bodyH, reqH, respH int) {
+	W := m.Width
+	H := m.Height
+
+	headerH := 5
+	statusH := 1
+	bodyH = H - headerH - statusH
+	if bodyH < 4 {
+		bodyH = 4
+	}
+
+	sidebarW = W * 30 / 100
+	if sidebarW < 24 {
+		sidebarW = 24
+	}
+	if sidebarW > 45 {
+		sidebarW = 45
+	}
+	contentW = W - sidebarW
+	if contentW < 20 {
+		contentW = 20
+	}
+
+	reqH = bodyH * 52 / 100
+	respH = bodyH - reqH
+	return
+}
+
 func (m Model) Init() tea.Cmd {
 	return tea.SetWindowTitle("brui")
 }
@@ -152,18 +180,104 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.handleNormalKeys(msg)
 
 	case tea.MouseMsg:
-		if msg.Action == tea.MouseActionPress && msg.Button == tea.MouseButtonLeft {
-			sidebarW := m.Width * 30 / 100
-			if sidebarW < 24 {
-				sidebarW = 24
+		return m.handleMouse(msg)
+	}
+
+	return m, nil
+}
+
+func (m *Model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
+	if m.Width <= 0 || m.Height <= 0 {
+		return *m, nil
+	}
+
+	sidebarW, contentW, bodyH, reqH, respH := m.layoutDimensions()
+	_ = contentW
+	_ = respH
+
+	// 1. Mouse Wheel Scrolling
+	if msg.Button == tea.MouseButtonWheelUp || msg.Button == tea.MouseButtonWheelDown || msg.Button == tea.MouseButtonWheelLeft || msg.Button == tea.MouseButtonWheelRight {
+		innerH := bodyH - 2
+		if innerH < 1 {
+			innerH = 1
+		}
+
+		// Over sidebar
+		if msg.X < sidebarW && msg.Y >= 5 && msg.Y < 5+bodyH {
+			if msg.Button == tea.MouseButtonWheelUp {
+				if m.SidebarOffset > 0 {
+					m.SidebarOffset--
+				}
+				if m.SelectedIdx > m.SidebarOffset+innerH-1 {
+					m.SelectedIdx = m.SidebarOffset + innerH - 1
+					m.selectCurrentItem()
+				}
+			} else if msg.Button == tea.MouseButtonWheelDown {
+				maxOffset := len(m.VisibleItems) - innerH
+				if maxOffset < 0 {
+					maxOffset = 0
+				}
+				if m.SidebarOffset < maxOffset {
+					m.SidebarOffset++
+				}
+				if m.SelectedIdx < m.SidebarOffset {
+					m.SelectedIdx = m.SidebarOffset
+					m.selectCurrentItem()
+				}
 			}
-			if sidebarW > 45 {
-				sidebarW = 45
+			return *m, nil
+		}
+
+		// Over Request Pane
+		if msg.X >= sidebarW && msg.Y >= 5 && msg.Y < 5+reqH {
+			if msg.Button == tea.MouseButtonWheelUp {
+				if m.ReqScroll > 0 {
+					m.ReqScroll--
+				}
+			} else if msg.Button == tea.MouseButtonWheelDown {
+				m.ReqScroll++
 			}
-			headerH := 5
-			// Click in sidebar
-			if msg.X >= 1 && msg.X < sidebarW-1 && msg.Y >= headerH+1 && msg.Y < m.Height-1 {
-				row := msg.Y - (headerH + 1)
+			return *m, nil
+		}
+
+		// Over Response Pane
+		if msg.X >= sidebarW && msg.Y >= 5+reqH && msg.Y < 5+bodyH {
+			if msg.Button == tea.MouseButtonWheelUp {
+				if m.RespScroll > 0 {
+					m.RespScroll -= 2
+					if m.RespScroll < 0 {
+						m.RespScroll = 0
+					}
+				}
+			} else if msg.Button == tea.MouseButtonWheelDown {
+				m.RespScroll += 2
+			}
+			return *m, nil
+		}
+
+		return *m, nil
+	}
+
+	// 2. Left Button Click
+	if msg.Action == tea.MouseActionPress && msg.Button == tea.MouseButtonLeft {
+		// A. Header (rows 0..4)
+		if msg.Y >= 0 && msg.Y < 5 {
+			if msg.Y == 2 {
+				// Line 2: " <dog2>  Collection [C]: [name]   Env [E]: [env]"
+				collEnd := 12 + 16 + len(m.Coll.Name) + 2
+				if msg.X >= collEnd {
+					m.cycleEnvironment()
+				} else if msg.X >= 11 {
+					m.StatusMsg = fmt.Sprintf("Collection: %s (%d requests)", m.Coll.Name, len(m.Coll.Requests))
+				}
+			}
+			return *m, nil
+		}
+
+		// B. Sidebar (cols 0..sidebarW-1, rows 5..5+bodyH-1)
+		if msg.X < sidebarW && msg.Y >= 5 && msg.Y < 5+bodyH {
+			if msg.Y >= 6 && msg.Y < 5+bodyH-1 {
+				row := msg.Y - 6
 				targetIdx := m.SidebarOffset + row
 				if targetIdx >= 0 && targetIdx < len(m.VisibleItems) {
 					m.SelectedIdx = targetIdx
@@ -172,22 +286,127 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						m.ExpandedFolders[it.Folder.ID] = !m.ExpandedFolders[it.Folder.ID]
 						m.rebuildTree()
 					} else {
+						m.IsEditingURL = false
+						m.ACCandidates = nil
 						m.selectCurrentItem()
 					}
 				}
 			}
-			// Click on URL line to edit
-			if msg.X >= sidebarW+2 && msg.Y == headerH+1 {
+			return *m, nil
+		}
+
+		// C. Request Pane (cols sidebarW..Width-1, rows 5..5+reqH-1)
+		if msg.X >= sidebarW && msg.Y >= 5 && msg.Y < 5+reqH {
+			relX := msg.X - sidebarW - 1
+			if relX < 0 {
+				relX = 0
+			}
+
+			// Row 6: Method badge + URL
+			if msg.Y == 6 && m.SelectedRequest != nil {
+				methodBadgeLen := len(m.SelectedRequest.Method) + 5
+				if relX <= methodBadgeLen {
+					m.cycleMethod()
+				} else {
+					m.IsEditingURL = true
+					m.URLEditText = m.SelectedRequest.URL
+					clickCol := relX - (methodBadgeLen + 2)
+					if clickCol < 0 {
+						clickCol = 0
+					}
+					if clickCol > len(m.URLEditText) {
+						clickCol = len(m.URLEditText)
+					}
+					m.URLCursor = clickCol
+					m.updateAutocomplete()
+				}
+				return *m, nil
+			}
+
+			// Row 7: Request Tabs
+			if msg.Y == 7 {
+				m.IsEditingURL = false
+				m.ACCandidates = nil
+				if relX < 15 {
+					m.ActiveTab = "headers"
+				} else if relX < 28 {
+					m.ActiveTab = "params"
+				} else if relX < 39 {
+					m.ActiveTab = "body"
+				} else if relX < 50 {
+					m.ActiveTab = "auth"
+				} else {
+					m.ActiveTab = "docs"
+				}
+				return *m, nil
+			}
+
+			return *m, nil
+		}
+
+		// D. Response Pane (cols sidebarW..Width-1, rows 5+reqH..5+bodyH-1)
+		if msg.X >= sidebarW && msg.Y >= 5+reqH && msg.Y < 5+bodyH {
+			relX := msg.X - sidebarW - 1
+			// Row 5+reqH+1: Response tabs & status
+			if msg.Y == 5+reqH+1 {
+				if relX >= 38 && relX < 53 {
+					m.ActiveRespTab = "body"
+				} else if relX >= 53 {
+					m.ActiveRespTab = "headers"
+				} else if m.LastResponse == nil {
+					m.executeCurrentRequest()
+				}
+			}
+			return *m, nil
+		}
+
+		// E. Status Bar (last row)
+		if msg.Y >= m.Height-1 {
+			if len(m.ACCandidates) > 0 {
+				if msg.X >= m.Width-18 {
+					m.ACCandidates = nil
+					m.ACSelectedIdx = 0
+				} else {
+					m.acceptAutocomplete()
+				}
+				return *m, nil
+			}
+
+			// Shortcuts:
+			// " [Space] Send   [U] Edit URL   [E] Env   [M] Method   [1-5] Tabs   [S] Save   [q] Quit"
+			if msg.X >= 1 && msg.X <= 15 {
+				m.executeCurrentRequest()
+			} else if msg.X >= 16 && msg.X <= 29 {
 				if m.SelectedRequest != nil {
 					m.IsEditingURL = true
 					m.URLEditText = m.SelectedRequest.URL
 					m.URLCursor = len(m.URLEditText)
+					m.updateAutocomplete()
 				}
+			} else if msg.X >= 30 && msg.X <= 39 {
+				m.cycleEnvironment()
+			} else if msg.X >= 40 && msg.X <= 53 {
+				m.cycleMethod()
+			} else if msg.X >= 54 && msg.X <= 66 {
+				tabs := []string{"headers", "params", "body", "auth", "docs"}
+				curIdx := 0
+				for i, t := range tabs {
+					if t == m.ActiveTab {
+						curIdx = i
+						break
+					}
+				}
+				m.ActiveTab = tabs[(curIdx+1)%len(tabs)]
+			} else if msg.X >= 67 && msg.X <= 78 {
+				_ = m.saveCurrentRequest()
+			} else if msg.X >= 79 {
+				return *m, tea.Quit
 			}
+			return *m, nil
 		}
 	}
 
-	return m, nil
+	return *m, nil
 }
 
 func (m *Model) handleURLEditKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
@@ -562,30 +781,10 @@ func (m Model) View() string {
 		return "Loading brui..."
 	}
 
-	W := m.Width
-	H := m.Height
+	sidebarW, contentW, bodyH, _, _ := m.layoutDimensions()
 
-	headerH := 5
-	statusH := 1
-	bodyH := H - headerH - statusH
-	if bodyH < 4 {
-		bodyH = 4
-	}
-
-	header := m.renderHeader(W, headerH)
-	statusBar := m.renderStatusBar(W)
-
-	sidebarW := W * 30 / 100
-	if sidebarW < 24 {
-		sidebarW = 24
-	}
-	if sidebarW > 45 {
-		sidebarW = 45
-	}
-	contentW := W - sidebarW
-	if contentW < 20 {
-		contentW = 20
-	}
+	header := m.renderHeader(m.Width, 5)
+	statusBar := m.renderStatusBar(m.Width)
 
 	sidebar := m.renderSidebar(sidebarW, bodyH)
 	content := m.renderContent(contentW, bodyH)

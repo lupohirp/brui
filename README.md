@@ -1,93 +1,84 @@
-# ⚡ brui
+# brui
 
-> **The mouse-friendly, Catppuccin-themed Terminal API Client for Bruno collections.**
-> Native Node.js scripting runtime, automatic nested request execution (`await bru.runRequest`), interactive OAuth2 with browser loopback & PKCE, and ultra-low RAM footprint (~35MB).
+Terminal user interface (TUI) for [Bruno](https://www.usebruno.com/) API collections.
 
----
+`brui` reads and writes `.bru` files directly using `@usebruno/lang`, executes pre-request and post-response scripts in a Node.js `vm` context, decrypts local Bruno `secrets.json` stores using `@usebruno/node-machine-id`, and handles OAuth2 token flows (`password`, `client_credentials`, and `authorization_code` with PKCE).
 
-## ✨ Features
+## Features
 
-- 📁 **Native Bruno (.bru) Compatibility**: Reads and writes Bruno collections and environments directly using `@usebruno/lang`. Zero conversion or import needed.
-- 🖱️ **Full Mouse Support**: Click to navigate the collection tree, click tabs (Headers, Params, Body, Auth, Pre/Post Scripts, Docs), and scroll request/response views with your mouse wheel.
-- 🎨 **Catppuccin & Modern Themes**: Built-in support for **Catppuccin Mocha**, **Macchiato**, **Frappé**, **Latte**, plus **Tokyo Night** and **Dracula**. Switch themes on-the-fly with `T`.
-- ⚡ **True Node.js Scripting Engine**: Pre-request and post-response scripts run inside an isolated `node:vm` context with access to the collection's local `node_modules` (you can `require()` any installed npm package!).
-- 🔄 **Automatic Request Nesting (`await bru.runRequest`)**: Supports automatic token acquisition and renewal (e.g. running an `_Auth/Get Token` request before calling an API when the token is missing or expired).
-- 🌐 **Interactive OAuth2 with Browser Loopback**:
-  - Automatically spins up a local temporary HTTP listener on `http://127.0.0.1:3000/callback`.
-  - Opens your system's default browser with PKCE (`S256`).
-  - Intercepts the authorization code, performs the token exchange, and stores the token in the active environment.
-- 🪶 **Low Memory Consumption**: Consumes ~35MB RAM, starting up instantaneously without Electron or Chromium bloat.
+- **Direct `.bru` file support**: Parses and modifies collections, folders, requests, and environments in place via `@usebruno/lang`.
+- **Environment & Secret Management**: Reads plaintext variables from `environments/*.bru` and decrypts secret variables stored in Bruno's local `~/.config/bruno/secrets.json`. Allows viewing, editing, and persisting variables back to disk.
+- **Authentication Manager**: Configure `inherit`, `none`, `bearer`, `basic`, or `oauth2` per request and save changes directly to the `.bru` file.
+- **OAuth2 Support**:
+  - `password` grant (Resource Owner Password Credentials)
+  - `client_credentials` grant
+  - `authorization_code` grant with PKCE (`S256`) and local loopback listener (`http://127.0.0.1:3000/callback`)
+- **Scripting Runtime**: Runs `script:pre-request`, `script:post-response`, and `tests` blocks with support for `bru.getEnvVar`, `bru.setEnvVar`, `bru.getVar`, `bru.setVar`, `await bru.runRequest`, `req`, `res`, and `expect`.
+- **Keyboard & Mouse Navigation**: Full mouse click/scroll support alongside keyboard shortcuts.
+- **Themes**: Catppuccin (Mocha, Macchiato, Frappe, Latte), Tokyo Night, and Dracula.
 
----
-
-## 🚀 Quick Start
-
-### Installation
+## Installation
 
 ```bash
-# Clone the repository
-git clone https://github.com/pakilodi/brui.git
+git clone https://github.com/lupohirp/brui.git
 cd brui
-
-# Install dependencies and build
 npm install
 npm run build
-
-# (Optional) Link globally so you can use 'brui' anywhere
 npm link
 ```
 
-### Usage
+## Usage
 
 ```bash
-# Launch on a Bruno collection directory
-brui /path/to/bruno-collection
+# Open a Bruno collection directory (defaults to current directory)
+brui /path/to/collection
 
-# Launch with a specific theme
-brui /path/to/bruno-collection --theme "Catppuccin Mocha"
+# Pre-select an environment
+brui /path/to/collection --env SIT
 
-# Launch with a specific environment pre-selected
-brui /path/to/bruno-collection --env SIT
+# Select a theme
+brui /path/to/collection --theme "Catppuccin Mocha"
+
+# List available themes
+brui --list-themes
 ```
 
----
+## Keybindings
 
-## ⌨️ Controls & Keybindings
-
-| Key / Action | Description |
+| Key | Action |
 | :--- | :--- |
-| **`Enter`** / **`Space`** | Send the selected request |
-| **`O`** | Trigger OAuth2 interactive browser login |
-| **`E`** | Cycle active environment (e.g. `SIT` → `EVO` → `GREEN`) |
-| **`T`** | Cycle themes (Mocha, Macchiato, Frappé, Latte, Tokyo Night, Dracula) |
-| **`1` – `7`** | Switch request tabs (Headers, Params, Body, Auth, Pre-Script, Post-Script, Docs) |
-| **`Tab`** | Switch keyboard focus between Sidebar and Content panels |
-| **`q`** / **`Ctrl+C`** | Quit brui |
-| **`Mouse Click`** | Select any request in the sidebar or click any tab |
-| **`Mouse Wheel`** | Scroll response body, headers, or request content |
+| `Space` / `Enter` | Send selected request (or toggle folder in sidebar) |
+| `C` | Open collection switcher |
+| `E` | Open environment and variables manager |
+| `A` | Open authentication manager for current request |
+| `O` | Acquire or renew OAuth2 access token |
+| `M` | Cycle authentication mode (when on Auth tab) |
+| `S` | Save authentication settings to `.bru` file |
+| `T` | Cycle color theme |
+| `1` - `7` | Switch request tab (`Headers`, `Params`, `Body`, `Auth`, `Pre-Script`, `Post-Script`, `Docs`) |
+| `Tab` | Cycle focus between sidebar, request pane, and response pane |
+| `q` / `Ctrl+C` | Exit |
 
----
+## Project Structure
 
-## 🏗️ Architecture
-
-```
+```text
 src/
 ├── core/
-│   ├── parser.ts          # Uses @usebruno/lang to parse .bru and environments
-│   ├── interpolation.ts   # Resolves {{variables}} from runtime, env, and system
-│   ├── http-client.ts     # Native Node fetch client with timing and headers
-│   ├── script-runner.ts   # Node.js VM runtime (bru, req, res, expect, require)
-│   └── oauth2.ts          # Loopback HTTP server & browser opening (PKCE + code exchange)
+│   ├── http-client.ts     # HTTP request execution and timing
+│   ├── interpolation.ts   # {{variable}} resolution across runtime, env, and process.env
+│   ├── oauth2.ts          # OAuth2 password, client_credentials, and PKCE loopback flows
+│   ├── parser.ts          # .bru collection/environment parser and Bruno secrets.json decryption
+│   └── script-runner.ts   # Node.js VM sandbox for pre/post scripts and bru.runRequest
 ├── themes/
-│   └── index.ts           # Catppuccin and community color palettes
+│   └── index.ts           # Color palettes
 ├── ui/
-│   └── app.ts             # Neo-Blessed terminal UI orchestrator with mouse events
-├── types.ts               # Shared TypeScript definitions
-└── index.ts               # CLI argument parser & launcher
+│   ├── app.ts             # Main TUI layout and event handling
+│   ├── auth-manager.ts    # Interactive authentication configuration modal
+│   └── env-manager.ts     # Environment selector and variable editor modal
+├── types.ts               # TypeScript interfaces
+└── index.ts               # CLI entry point
 ```
 
----
+## License
 
-## 📄 License
-
-MIT © Paolo Chilodi
+MIT

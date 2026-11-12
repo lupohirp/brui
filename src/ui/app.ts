@@ -32,6 +32,10 @@ export class BruiApp {
   private activeResponseTab: 'body' | 'headers' | 'console' = 'body';
   private lastResponse?: HttpResponse;
 
+  private requestTabRanges: Array<{ id: 'headers' | 'params' | 'body' | 'auth' | 'pre-script' | 'post-script' | 'docs'; start: number; end: number }> = [];
+  private responseTabRanges: Array<{ id: 'body' | 'headers' | 'console'; start: number; end: number }> = [];
+  private authModeRanges: Array<{ id: BrunoRequest['authType']; start: number; end: number }> = [];
+
   // UI Widgets
   private screen!: blessed.Widgets.Screen;
   private headerBox!: blessed.Widgets.BoxElement;
@@ -127,6 +131,8 @@ export class BruiApp {
   public start() {
     this.screen = blessed.screen({
       smartCSR: true,
+      terminal: 'xterm-256color',
+      fullUnicode: true,
       title: `brui - ${this.collection.name}`,
       mouse: true,
       sendFocus: true,
@@ -168,13 +174,13 @@ export class BruiApp {
   private buildLayout() {
     const theme = this.getTheme();
 
-    // 1. Top Header (Height 3)
+    // 1. Top Header (Height 5 -> 3 inner lines for 6x9 pixel-art Bruno dog + controls)
     this.headerBox = blessed.box({
       parent: this.screen,
       top: 0,
       left: 0,
       width: '100%',
-      height: 3,
+      height: 5,
       tags: true,
       border: { type: 'line' },
       mouse: true
@@ -183,7 +189,7 @@ export class BruiApp {
     // 2. Left Sidebar (Tree view with folders & requests)
     this.sidebarList = blessed.list({
       parent: this.screen,
-      top: 3,
+      top: 5,
       left: 0,
       width: '32%',
       bottom: 2,
@@ -203,13 +209,12 @@ export class BruiApp {
     // 3. Request Pane (Top Right)
     this.requestPane = blessed.box({
       parent: this.screen,
-      top: 3,
+      top: 5,
       left: '32%',
       width: '68%',
-      height: '48%',
+      bottom: '48%',
       border: { type: 'line' },
-      tags: true,
-      mouse: true
+      tags: true
     });
 
     this.requestTabsBox = blessed.box({
@@ -242,13 +247,12 @@ export class BruiApp {
     // 4. Response Pane (Bottom Right)
     this.responsePane = blessed.box({
       parent: this.screen,
-      top: '51%',
+      top: '52%',
       left: '32%',
       width: '68%',
       bottom: 2,
       border: { type: 'line' },
-      tags: true,
-      mouse: true
+      tags: true
     });
 
     this.responseHeaderBox = blessed.box({
@@ -360,17 +364,24 @@ export class BruiApp {
       ? `{${t.get}-fg}[OK: Auth]{/}`
       : `{${t.subtext}-fg}[--: No Auth]{/}`;
 
-    // Bruno's golden retriever pixel dog icon:
-    // Fur: #f4aa42, Eyes: #cdd6f4, Nose/Tongue: #ea5a47
-    const brunoDog = `{#f4aa42-fg}◖{#cdd6f4-fg}•{#ea5a47-fg}ᴥ{#cdd6f4-fg}•{#f4aa42-fg}◗{/}`;
+    // 6x9 half-block pixel-art sprite of Bruno the Golden Retriever (3 rows x 9 cols):
+    // E = floppy ears (#c97a2b), Y = gold fur (#f4aa42), K = eyes/nose (#11111b), R = tongue (#ea5a47)
+    const E = '#c97a2b';
+    const Y = '#f4aa42';
+    const K = '#11111b';
+    const R = '#ea5a47';
 
-    this.headerBox.setContent(
-      ` {bold}${brunoDog} {#f4aa42-fg}BRUI{/}  ` +
-      `{${t.subtext}-fg}Collection:{/} {bold}{${t.put}-fg}[${this.collection.name}]{/}  ` +
-      `{${t.subtext}-fg}Env:{/} {bold}{${t.options}-fg}[${envName}]{/}  ` +
-      `{${t.subtext}-fg}Auth:{/} ${authStatus}  ` +
-      `{right}{${t.subtext}-fg}Theme:{/} {${t.put}-fg}${t.name}{/} `
-    );
+    const dog1 = `{${E}-fg}▄█{/}{${Y}-fg}█████{/}{${E}-fg}█▄{/}`;
+    const dog2 = `{${E}-fg}▀{/}{${E}-fg}{${Y}-bg}▀{/}{${K}-fg}{${Y}-bg}▀{/}{${t.bg}-bg}{${Y}-fg}█{/}{${Y}-fg}{${K}-bg}▀{/}{${t.bg}-bg}{${Y}-fg}█{/}{${K}-fg}{${Y}-bg}▀{/}{${E}-fg}{${Y}-bg}▀{/}{${t.bg}-bg}{${E}-fg}▀{/}`;
+    const dog3 = `  {${Y}-fg}▀▀{/}{${R}-fg}█{/}{${Y}-fg}▀▀{/}  `;
+
+    const line1 = ` ${dog1}  {bold}{#f4aa42-fg}BRUI{/} {${t.subtext}-fg}- Bruno Terminal Client{/}{right}{${t.subtext}-fg}Theme [T]:{/} {bold}{${t.put}-fg}[${t.name}]{/} `;
+    const line2 = ` ${dog2}  {${t.subtext}-fg}Collection [C]:{/} {bold}{${t.put}-fg}[${this.collection.name}]{/}   ` +
+                  `{${t.subtext}-fg}Env [E]:{/} {bold}{${t.options}-fg}[${envName}]{/}   ` +
+                  `{${t.subtext}-fg}Auth [A]:{/} ${authStatus}`;
+    const line3 = ` ${dog3}  {${t.subtext}-fg}[Space] Send   [O] OAuth2 Token   [1-7] Tabs   [Tab] Focus   [q] Quit{/}`;
+
+    this.headerBox.setContent(`${line1}\n${line2}\n${line3}`);
   }
 
   private renderSidebar() {
@@ -423,7 +434,7 @@ export class BruiApp {
       ` {bold}{${badgeColor}-fg}${req.method}{/}  {bold}${interpolatedUrl}{/}`
     );
 
-    const tabs = [
+    const tabs: Array<{ id: 'headers' | 'params' | 'body' | 'auth' | 'pre-script' | 'post-script' | 'docs'; label: string }> = [
       { id: 'headers', label: `Headers (${req.headers.length})` },
       { id: 'params', label: `Params (${req.params.length})` },
       { id: 'body', label: `Body (${req.bodyType})` },
@@ -433,7 +444,16 @@ export class BruiApp {
       { id: 'docs', label: `Docs` }
     ];
 
+    this.requestTabRanges = [];
+    let reqColOffset = 0;
     const tabStr = tabs.map(tab => {
+      const visibleLen = tab.label.length + 4;
+      this.requestTabRanges.push({
+        id: tab.id,
+        start: reqColOffset,
+        end: reqColOffset + visibleLen - 1
+      });
+      reqColOffset += visibleLen + 1;
       if (tab.id === this.activeRequestTab) {
         return `{bold}{${t.accent}-fg}[ ${tab.label} ]{/}`;
       }
@@ -468,9 +488,18 @@ export class BruiApp {
     } else if (this.activeRequestTab === 'auth') {
       const mode = req.authType;
       const modes = ['inherit', 'none', 'bearer', 'basic', 'oauth2'] as const;
+      this.authModeRanges = [];
+      let modeColOffset = 13; // " Auth Mode:  " is 13 chars
       const modeButtons = modes.map(m => {
+        const visibleLen = m.length + 4;
+        this.authModeRanges.push({
+          id: m,
+          start: modeColOffset,
+          end: modeColOffset + visibleLen - 1
+        });
+        modeColOffset += visibleLen + 2;
         if (m === mode) {
-          return `{bold}{${t.selectionFg}-fg}{${t.accent}-bg} [ ${m.toUpperCase()} ] {/}`;
+          return `{bold}{${t.selectionFg}-fg}{${t.accent}-bg}[ ${m.toUpperCase()} ]{/}{${t.bg}-bg}`;
         }
         return `{${t.subtext}-fg}[ ${m.toUpperCase()} ]{/}`;
       }).join('  ');
@@ -584,13 +613,22 @@ export class BruiApp {
       `{${t.subtext}-fg}Size:{/} {bold}${sizeFormatted}{/}`
     );
 
-    const tabs = [
+    const tabs: Array<{ id: 'body' | 'headers' | 'console'; label: string }> = [
       { id: 'body', label: 'Response Body' },
       { id: 'headers', label: `Headers (${Object.keys(resp.headers).length})` },
       { id: 'console', label: `Console (${this.scriptRunner.logs.length})` }
     ];
 
+    this.responseTabRanges = [];
+    let respColOffset = 0;
     const tabStr = tabs.map(tab => {
+      const visibleLen = tab.label.length + 4;
+      this.responseTabRanges.push({
+        id: tab.id,
+        start: respColOffset,
+        end: respColOffset + visibleLen - 1
+      });
+      respColOffset += visibleLen + 1;
       if (tab.id === this.activeResponseTab) {
         return `{bold}{${t.accent}-fg}[ ${tab.label} ]{/}`;
       }
@@ -674,25 +712,76 @@ export class BruiApp {
       this.handleTreeSelection(idx);
     });
 
-    // 3. Mouse click on Header -> Opens Collection Picker!
-    this.headerBox.on('click', () => {
+    // 3. Mouse click on Header -> Open Collection, Env, Auth, or Theme based on click position
+    this.headerBox.on('click', (data: any) => {
+      if (this.isModalOpen()) return;
+      const pos = (this.headerBox as any).lpos;
+      if (!pos || !data || typeof data.x !== 'number') {
+        this.openCollectionModal();
+        return;
+      }
+      const relX = data.x - (pos.xi + 1);
+      const relY = data.y - (pos.yi + 1);
+      const width = (pos.xl - pos.xi) - 2;
+
+      if (relY === 0 && relX >= width - 35) {
+        const newTheme = this.themeManager.cycle();
+        this.applyTheme();
+        this.renderSidebar();
+        this.updateRequestView();
+        this.updateResponseView();
+        this.updateStatusBar(`Theme: ${newTheme.name}`);
+        return;
+      }
+
+      if (relY === 1) {
+        // Line 2: " <dog9>  Collection [C]: [<name>]   Env [E]: [<env>]   Auth [A]: [<status>]"
+        const collPrefix = 12 + 16 + this.collection.name.length + 2; // up to end of [name]
+        const envName = this.collection.activeEnvironment || 'None';
+        const envStart = collPrefix + 3;
+        const envEnd = envStart + 9 + envName.length + 2;
+
+        if (relX >= envStart && relX <= envEnd) {
+          this.openEnvironmentModal();
+          return;
+        }
+        if (relX > envEnd) {
+          this.openAuthManagerModal();
+          return;
+        }
+      }
+
       this.openCollectionModal();
     });
 
-    // 4. Mouse click on Request Tabs
-    this.requestTabsBox.on('click', () => {
-      const tabs: Array<typeof this.activeRequestTab> = ['headers', 'params', 'body', 'auth', 'pre-script', 'post-script', 'docs'];
-      const curIdx = tabs.indexOf(this.activeRequestTab);
-      this.activeRequestTab = tabs[(curIdx + 1) % tabs.length];
-      this.updateRequestView();
+    // 4. Mouse click on Request Tabs -> Select exact clicked tab
+    this.requestTabsBox.on('click', (data: any) => {
+      if (this.isModalOpen()) return;
+      const pos = (this.requestTabsBox as any).lpos;
+      if (pos && data && typeof data.x === 'number') {
+        const relX = data.x - pos.xi;
+        const hit = this.requestTabRanges.find(r => relX >= r.start && relX <= r.end);
+        if (hit) {
+          this.activeRequestTab = hit.id;
+          this.updateRequestView();
+          return;
+        }
+      }
     });
 
-    // 5. Mouse click on Response Tabs
-    this.responseTabsBox.on('click', () => {
-      const tabs: Array<typeof this.activeResponseTab> = ['body', 'headers', 'console'];
-      const curIdx = tabs.indexOf(this.activeResponseTab);
-      this.activeResponseTab = tabs[(curIdx + 1) % tabs.length];
-      this.updateResponseView();
+    // 5. Mouse click on Response Tabs -> Select exact clicked tab
+    this.responseTabsBox.on('click', (data: any) => {
+      if (this.isModalOpen()) return;
+      const pos = (this.responseTabsBox as any).lpos;
+      if (pos && data && typeof data.x === 'number') {
+        const relX = data.x - pos.xi;
+        const hit = this.responseTabRanges.find(r => relX >= r.start && relX <= r.end);
+        if (hit) {
+          this.activeResponseTab = hit.id;
+          this.updateResponseView();
+          return;
+        }
+      }
     });
 
     // 6. Global Hotkeys
@@ -762,11 +851,51 @@ export class BruiApp {
       this.screen.render();
     });
 
-    // Mouse click on Request Content Box (Opens Auth Manager when in Auth Tab)
-    this.requestContentBox.on('click', () => {
-      if (this.activeRequestTab === 'auth') {
-        this.openAuthManagerModal();
+    // Mouse click on Request Content Box (Handles Auth Mode buttons & Actions when in Auth Tab)
+    this.requestContentBox.on('click', async (data: any) => {
+      if (this.isModalOpen()) return;
+      if (this.activeRequestTab !== 'auth' || !this.selectedRequest) return;
+
+      const pos = (this.requestContentBox as any).lpos;
+      if (pos && data && typeof data.x === 'number' && typeof data.y === 'number') {
+        const relX = data.x - pos.xi;
+        const relY = data.y - pos.yi + ((this.requestContentBox as any).childBase || 0);
+
+        // Line 0: " Auth Mode:  [ INHERIT ]  [ NONE ]  [ BEARER ]  [ BASIC ]  [ OAUTH2 ]"
+        if (relY === 0) {
+          const hitMode = this.authModeRanges.find(r => relX >= r.start && relX <= r.end);
+          if (hitMode) {
+            this.selectedRequest.authType = hitMode.id;
+            this.updateHeader();
+            this.updateRequestView();
+            this.updateStatusBar(`Auth mode switched to: [${hitMode.id.toUpperCase()}]`);
+            return;
+          }
+        }
+
+        // Check clicked line text for action buttons
+        const lines = (this.requestContentBox.getContent() || '').split('\n');
+        const clickedLine = lines[relY] || '';
+        if (clickedLine.includes('GET ACCESS TOKEN')) {
+          await this.triggerOAuth2();
+          return;
+        }
+        if (clickedLine.includes('Cycle Mode') && relX >= 32 && relX <= 58) {
+          const modes: Array<BrunoRequest['authType']> = ['inherit', 'none', 'bearer', 'basic', 'oauth2'];
+          const curIdx = modes.indexOf(this.selectedRequest.authType);
+          this.selectedRequest.authType = modes[(curIdx + 1) % modes.length];
+          this.updateHeader();
+          this.updateRequestView();
+          this.updateStatusBar(`Auth mode switched to: [${this.selectedRequest.authType.toUpperCase()}]`);
+          return;
+        }
+        if (clickedLine.includes('Save (Press') && relX > 58) {
+          this.saveActiveRequestAuth();
+          return;
+        }
       }
+
+      this.openAuthManagerModal();
     });
 
     // Hotkey [A]: Auth Manager Dialog

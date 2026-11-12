@@ -21,6 +21,7 @@ func ParseBruBlocks(raw string) []BruBlock {
 	
 	var current *BruBlock
 	inBlock := false
+	braceDepth := 0
 
 	for scanner.Scan() {
 		line := scanner.Text()
@@ -43,15 +44,23 @@ func ParseBruBlocks(raw string) []BruBlock {
 				}
 				current = &b
 				inBlock = true
+				braceDepth = 1
 			}
 		} else {
-			if trimmed == "}" {
+			opens := strings.Count(line, "{")
+			closes := strings.Count(line, "}")
+			if trimmed == "}" && braceDepth+opens-closes <= 0 {
 				if current != nil {
 					blocks = append(blocks, *current)
 					current = nil
 				}
 				inBlock = false
+				braceDepth = 0
 			} else {
+				braceDepth += opens - closes
+				if braceDepth < 1 {
+					braceDepth = 1
+				}
 				if current != nil {
 					current.Content = append(current.Content, line)
 				}

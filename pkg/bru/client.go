@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 )
@@ -17,14 +18,51 @@ var httpClient = &http.Client{
 }
 
 func ExecuteRequest(req *BrunoRequest, coll *BrunoCollection) (*HTTPResponse, error) {
-	// 1. Interpolate URL
-	finalURL := Interpolate(req.URL, coll)
+	// 1. Interpolate URL + append active query params
+	finalURL := strings.TrimSpace(Interpolate(req.URL, coll))
+	var queryParts []string
+	for _, p := range req.Params {
+		if p.Enabled && p.Name != "" {
+			k := url.QueryEscape(Interpolate(p.Name, coll))
+			v := url.QueryEscape(Interpolate(p.Value, coll))
+			queryParts = append(queryParts, k+"="+v)
+		}
+	}
+	if len(queryParts) > 0 {
+		sep := "?"
+		if strings.Contains(finalURL, "?") {
+			sep = "&"
+		}
+		finalURL += sep + strings.Join(queryParts, "&")
+	}
 
 	// 2. Body
 	var bodyReader io.Reader
 	if req.BodyType != "" && req.BodyType != "none" && req.BodyContent != "" {
-		interpolatedBody := Interpolate(req.BodyContent, coll)
-		bodyReader = strings.NewReader(interpolatedBody)
+		if req.BodyType == "form-urlencoded" || req.BodyType == "formUrlEncoded" {
+			vals := url.Values{}
+			for _, line := range strings.Split(req.BodyContent, "\n") {
+				trimmed := strings.TrimSpace(line)
+				if trimmed == "" || strings.HasPrefix(trimmed, "//") || strings.HasPrefix(trimmed, "#") || strings.HasPrefix(trimmed, "~") {
+					continue
+				}
+				var k, v string
+				if idx := strings.Index(trimmed, ":"); idx != -1 {
+					k = strings.TrimSpace(trimmed[:idx])
+					v = strings.TrimSpace(trimmed[idx+1:])
+				} else if idx := strings.Index(trimmed, "="); idx != -1 {
+					k = strings.TrimSpace(trimmed[:idx])
+					v = strings.TrimSpace(trimmed[idx+1:])
+				}
+				if k != "" {
+					vals.Set(Interpolate(k, coll), Interpolate(v, coll))
+				}
+			}
+			bodyReader = strings.NewReader(vals.Encode())
+		} else {
+			interpolatedBody := Interpolate(req.BodyContent, coll)
+			bodyReader = strings.NewReader(interpolatedBody)
+		}
 	}
 
 	httpReq, err := http.NewRequest(string(req.Method), finalURL, bodyReader)

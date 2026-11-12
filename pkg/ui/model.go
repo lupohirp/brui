@@ -90,6 +90,22 @@ type Model struct {
 	// Scrolling
 	RespScroll int
 	ReqScroll  int
+
+	// Async request execution
+	IsSending bool
+}
+
+// requestDoneMsg is delivered when an asynchronous HTTP request completes.
+type requestDoneMsg struct {
+	req  *bru.BrunoRequest
+	resp *bru.HTTPResponse
+	err  error
+}
+
+// shortcut describes one entry of the context-sensitive help bar.
+type shortcut struct {
+	Label  string
+	Action func(m *Model) tea.Cmd
 }
 
 func NewModel(coll *bru.BrunoCollection) Model {
@@ -224,9 +240,62 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case tea.MouseMsg:
 		return m.handleMouse(msg)
+
+	case requestDoneMsg:
+		m.IsSending = false
+		if msg.err != nil {
+			m.StatusMsg = fmt.Sprintf("Error: %v", msg.err)
+			return m, nil
+		}
+		m.LastResponse = msg.resp
+		_ = m.ScriptRunner.RunPostResponse(msg.req, msg.resp)
+		m.RespScroll = 0
+		m.StatusMsg = fmt.Sprintf("Done: %s (%dms)", msg.resp.StatusText, msg.resp.DurationMs)
+		return m, nil
 	}
 
 	return m, nil
+}
+
+// sendCurrentRequest commits any pending inline edit, runs pre-request scripts
+// synchronously and performs the HTTP call asynchronously so the UI never freezes.
+func (m *Model) sendCurrentRequest() tea.Cmd {
+	if m.SelectedRequest == nil {
+		m.StatusMsg = "No request selected"
+		return nil
+	}
+	if m.IsSending {
+		m.StatusMsg = "A request is already in flight..."
+		return nil
+	}
+	m.commitPendingEdits()
+
+	req := m.SelectedRequest
+	coll := m.Coll
+	_ = m.ScriptRunner.RunPreRequest(req)
+	m.IsSending = true
+	m.StatusMsg = fmt.Sprintf("Sending %s %s...", req.Method, req.Name)
+	return func() tea.Msg {
+		resp, err := bru.ExecuteRequest(req, coll)
+		return requestDoneMsg{req: req, resp: resp, err: err}
+	}
+}
+
+// commitPendingEdits applies and closes any inline URL / content editing.
+func (m *Model) commitPendingEdits() {
+	if m.IsEditingURL {
+		if m.SelectedRequest != nil && m.SelectedRequest.URL != m.URLEditText {
+			m.SelectedRequest.URL = m.URLEditText
+			m.ModifiedRequests[m.SelectedRequest.ID] = true
+		}
+		m.IsEditingURL = false
+		m.ACCandidates = nil
+		m.ACSelectedIdx = 0
+	}
+	if m.IsEditingContent {
+		m.saveTabContent()
+		m.IsEditingContent = false
+	}
 }
 
 func (m *Model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
@@ -455,7 +524,7 @@ func (m *Model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 				} else if relX >= 53 {
 					m.ActiveRespTab = "headers"
 				} else if m.LastResponse == nil {
-					m.executeCurrentRequest()
+					return *m, m.sendCurrentRequest()
 				}
 			}
 			return *m, nil
@@ -473,33 +542,18 @@ func (m *Model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 				return *m, nil
 			}
 
-			// Shortcuts:
-			// " [Space] Send   [U] Edit URL   [E] Env   [I] Edit Tab   [N] New Req   [T] Theme   [M] Method   [S] Save   [q] Quit"
-			if msg.X >= 1 && msg.X <= 15 {
-				m.executeCurrentRequest()
-			} else if msg.X >= 16 && msg.X <= 29 {
-				if m.SelectedRequest != nil {
-					m.IsEditingURL = true
-					m.URLEditText = m.SelectedRequest.URL
-					m.URLCursor = len(m.URLEditText)
-					m.updateAutocomplete()
+			// Dynamic, context-sensitive shortcuts: compute click regions
+			// from the very same list that renderStatusBar draws.
+			col := 1
+			for _, sc := range m.currentShortcuts() {
+				w := ansi.StringWidth(sc.Label)
+				if msg.X >= col && msg.X < col+w+3 {
+					if sc.Action != nil {
+						return *m, sc.Action(m)
+					}
+					return *m, nil
 				}
-			} else if msg.X >= 30 && msg.X <= 39 {
-				m.openEnvironmentModal()
-			} else if msg.X >= 40 && msg.X <= 53 {
-				if m.SelectedRequest != nil {
-					m.startEditingContent()
-				}
-			} else if msg.X >= 54 && msg.X <= 66 {
-				m.openNewRequestPrompt()
-			} else if msg.X >= 67 && msg.X <= 77 {
-				m.cycleTheme()
-			} else if msg.X >= 78 && msg.X <= 89 {
-				m.cycleMethod()
-			} else if msg.X >= 90 && msg.X <= 99 {
-				_ = m.saveCurrentRequest()
-			} else if msg.X >= 100 {
-				return *m, tea.Quit
+				col += w + 3
 			}
 			return *m, nil
 		}
@@ -511,6 +565,14 @@ func (m *Model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 
 func (m *Model) handleURLEditKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.Type {
+	case tea.KeyCtrlR, tea.KeyF5:
+		return *m, m.sendCurrentRequest()
+
+	case tea.KeyCtrlS:
+		m.commitPendingEdits()
+		_ = m.saveCurrentRequest()
+		return *m, nil
+
 	case tea.KeyEsc:
 		m.IsEditingURL = false
 		m.ACCandidates = nil
@@ -795,8 +857,12 @@ func (m *Model) handleContentEditKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	case tea.KeyCtrlS:
 		m.saveTabContent()
+		m.IsEditingContent = false
 		_ = m.saveCurrentRequest()
 		return *m, nil
+
+	case tea.KeyCtrlR, tea.KeyF5:
+		return *m, m.sendCurrentRequest()
 
 	case tea.KeyEnter:
 		m.ContentEditText = m.ContentEditText[:m.ContentCursor] + "\n" + m.ContentEditText[m.ContentCursor:]
@@ -903,12 +969,12 @@ func (m *Model) handleNormalKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				m.ExpandedFolders[it.Folder.ID] = !m.ExpandedFolders[it.Folder.ID]
 				m.rebuildTree()
 			} else {
-				m.executeCurrentRequest()
+				return *m, m.sendCurrentRequest()
 			}
 		}
 
-	case " ":
-		m.executeCurrentRequest()
+	case " ", "space", "ctrl+r", "f5":
+		return *m, m.sendCurrentRequest()
 
 	case "u", "U":
 		if m.SelectedRequest != nil {
@@ -972,20 +1038,14 @@ func (m *Model) handleNormalKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 }
 
 func (m *Model) executeCurrentRequest() {
-	if m.SelectedRequest == nil {
+	// Synchronous variant (used by tests / non-interactive callers).
+	cmd := m.sendCurrentRequest()
+	if cmd == nil {
 		return
 	}
-	req := m.SelectedRequest
-	m.StatusMsg = fmt.Sprintf("Sending %s %s...", req.Method, req.Name)
-	_ = m.ScriptRunner.RunPreRequest(req)
-	resp, err := bru.ExecuteRequest(req, m.Coll)
-	if err != nil {
-		m.StatusMsg = fmt.Sprintf("Error: %v", err)
-	} else {
-		m.LastResponse = resp
-		_ = m.ScriptRunner.RunPostResponse(req, resp)
-		m.RespScroll = 0
-		m.StatusMsg = fmt.Sprintf("Done: %d %s (%dms)", resp.Status, resp.StatusText, resp.DurationMs)
+	if done, ok := cmd().(requestDoneMsg); ok {
+		nm, _ := m.Update(done)
+		*m = nm.(Model)
 	}
 }
 
@@ -1632,9 +1692,8 @@ func (m *Model) saveCollectionBru() error {
 }
 
 func (m *Model) saveCurrentRequest() error {
-	_ = m.saveCollectionBru()
 	if m.SelectedRequest == nil || m.SelectedRequest.FilePath == "" {
-		m.StatusMsg = "Collection saved"
+		m.StatusMsg = "No request selected to save"
 		return nil
 	}
 	raw := bru.SerializeRequest(m.SelectedRequest)
@@ -1644,7 +1703,7 @@ func (m *Model) saveCurrentRequest() error {
 		return err
 	}
 	delete(m.ModifiedRequests, m.SelectedRequest.ID)
-	m.StatusMsg = fmt.Sprintf("Saved: %s & collection.bru", filepath.Base(m.SelectedRequest.FilePath))
+	m.StatusMsg = fmt.Sprintf("Saved: %s", filepath.Base(m.SelectedRequest.FilePath))
 	return nil
 }
 
@@ -1833,7 +1892,7 @@ func (m Model) renderHeader(width, height int) string {
 	innerW := width - 2
 	l1 := padAndPaint(fmt.Sprintf(" %s  %s %s", dog1, accent.Render("BRUI"), subtext.Render("- Bruno Terminal Client (Go Native)")), innerW, m.Theme.Fg, m.Theme.Bg)
 	l2 := padAndPaint(fmt.Sprintf(" %s  %s %s   %s %s", dog2, subtext.Render("Collection [C]:"), putStyle.Render("["+m.Coll.Name+"]"), subtext.Render("Env [E]:"), optStyle.Render("["+envName+"]")), innerW, m.Theme.Fg, m.Theme.Bg)
-	l3 := padAndPaint(fmt.Sprintf(" %s  %s", dog3, hintStyle.Render("[↑/↓] Select   [Space] Send   [1-5] Tabs   [U] Edit URL   [E] Env   [S] Save   [q] Quit")), innerW, m.Theme.Fg, m.Theme.Bg)
+	l3 := padAndPaint(fmt.Sprintf(" %s  %s", dog3, hintStyle.Render(m.headerHintText())), innerW, m.Theme.Fg, m.Theme.Bg)
 
 	boxStyle := lipgloss.NewStyle().
 		Width(width - 2).
@@ -2321,9 +2380,13 @@ func (m Model) renderStatusBar(width int) string {
 		return padAndPaint(acTitle+strings.Join(cands, "")+hints, width, m.Theme.Fg, m.Theme.Surface)
 	}
 
+	var labels []string
+	for _, sc := range m.currentShortcuts() {
+		labels = append(labels, sc.Label)
+	}
 	shortcuts := lipgloss.NewStyle().
 		Foreground(lipgloss.Color(m.Theme.Fg)).
-		Render(" [Space] Send   [U] Edit URL   [E] Env   [I] Edit Tab   [N] New Req   [T] Theme   [M] Method   [S] Save   [q] Quit")
+		Render(" " + strings.Join(labels, "   "))
 
 	status := lipgloss.NewStyle().
 		Foreground(lipgloss.Color(m.Theme.Accent)).
@@ -2332,6 +2395,255 @@ func (m Model) renderStatusBar(width int) string {
 
 	barText := fmt.Sprintf("%s  │  %s", shortcuts, status)
 	return padAndPaint(barText, width, m.Theme.Fg, m.Theme.Surface)
+}
+
+func (m *Model) headerHintText() string {
+	switch {
+	case m.IsNewReqPromptOpen:
+		if m.NewReqStep == 0 {
+			return "[New Request]   [Enter] Next Step   [Esc] Cancel"
+		} else if m.NewReqStep == 1 {
+			return "[New Request]   [←/→] Method   [Enter] Next Step   [Esc] Cancel"
+		}
+		return "[New Request]   [Enter] Create Request   [Esc] Cancel"
+	case m.IsEnvPromptOpen:
+		return "[Environment Prompt]   [Enter] Save   [Esc] Cancel"
+	case m.IsEnvModalOpen:
+		if m.EnvModalFocusPane == "vars" {
+			return "[Env Manager: Vars]   [↑/↓] Select   [Enter] Edit Value   [N] New Var   [D] Delete Var   [Tab] Envs Pane   [Esc] Close"
+		}
+		return "[Env Manager: Envs]   [↑/↓] Select   [Enter] Activate Env   [N] New Env   [Tab] Vars Pane   [Esc] Close"
+	case m.IsEditingURL:
+		return "[Editing URL]   [Enter] Apply URL   [Esc] Cancel   [Ctrl+S] Save   [Ctrl+R] Send   [Tab] Autocomplete"
+	case m.IsEditingContent:
+		return fmt.Sprintf("[Editing %s]   [Esc] Done Editing   [Ctrl+S] Save   [Ctrl+R] Send   [Enter] Newline   [Tab] Indent", strings.ToUpper(m.ActiveTab))
+	default:
+		return "[↑/↓] Select   [Space] Send   [1-5] Tabs   [U] Edit URL   [E] Env   [S] Save   [q] Quit"
+	}
+}
+
+func (m *Model) currentShortcuts() []shortcut {
+	switch {
+	case m.IsNewReqPromptOpen:
+		list := []shortcut{
+			{Label: "[Enter] Confirm"},
+		}
+		if m.NewReqStep == 1 {
+			list = append(list, shortcut{
+				Label: "[←/→] Method",
+				Action: func(m *Model) tea.Cmd {
+					methods := []bru.HttpMethod{bru.MethodGet, bru.MethodPost, bru.MethodPut, bru.MethodPatch, bru.MethodDelete}
+					idx := 0
+					for i, mt := range methods {
+						if mt == m.NewReqMethod {
+							idx = (i + 1) % len(methods)
+							break
+						}
+					}
+					m.NewReqMethod = methods[idx]
+					return nil
+				},
+			})
+		}
+		list = append(list, shortcut{
+			Label: "[Esc] Cancel",
+			Action: func(m *Model) tea.Cmd {
+				m.IsNewReqPromptOpen = false
+				m.StatusMsg = "New Request Cancelled"
+				return nil
+			},
+		})
+		return list
+
+	case m.IsEnvPromptOpen:
+		return []shortcut{
+			{Label: "[Enter] Save"},
+			{
+				Label: "[Esc] Cancel",
+				Action: func(m *Model) tea.Cmd {
+					m.IsEnvPromptOpen = false
+					m.EnvPromptAction = ""
+					return nil
+				},
+			},
+		}
+
+	case m.IsEnvModalOpen:
+		list := []shortcut{
+			{
+				Label: "[Tab] Switch Pane",
+				Action: func(m *Model) tea.Cmd {
+					if m.EnvModalFocusPane == "envs" {
+						m.EnvModalFocusPane = "vars"
+					} else {
+						m.EnvModalFocusPane = "envs"
+					}
+					return nil
+				},
+			},
+			{Label: "[↑/↓] Select"},
+			{Label: "[Enter] Activate/Edit"},
+			{Label: "[N] New"},
+		}
+		if m.EnvModalFocusPane == "vars" {
+			list = append(list, shortcut{Label: "[D] Delete"})
+		}
+		list = append(list, shortcut{
+			Label: "[Esc] Close",
+			Action: func(m *Model) tea.Cmd {
+				m.IsEnvModalOpen = false
+				m.IsEnvPromptOpen = false
+				return nil
+			},
+		})
+		return list
+
+	case m.IsEditingURL:
+		return []shortcut{
+			{
+				Label: "[Enter] Apply URL",
+				Action: func(m *Model) tea.Cmd {
+					if m.SelectedRequest != nil {
+						m.SelectedRequest.URL = m.URLEditText
+						m.ModifiedRequests[m.SelectedRequest.ID] = true
+						m.StatusMsg = "URL Updated (Press [S] to save)"
+					}
+					m.IsEditingURL = false
+					m.ACCandidates = nil
+					m.ACSelectedIdx = 0
+					return nil
+				},
+			},
+			{
+				Label: "[Esc] Cancel",
+				Action: func(m *Model) tea.Cmd {
+					m.IsEditingURL = false
+					m.ACCandidates = nil
+					m.ACSelectedIdx = 0
+					m.StatusMsg = "URL Edit Cancelled"
+					return nil
+				},
+			},
+			{
+				Label: "[Ctrl+S] Save",
+				Action: func(m *Model) tea.Cmd {
+					m.commitPendingEdits()
+					_ = m.saveCurrentRequest()
+					return nil
+				},
+			},
+			{
+				Label: "[Ctrl+R] Send",
+				Action: func(m *Model) tea.Cmd {
+					return m.sendCurrentRequest()
+				},
+			},
+			{Label: "[Tab] Autocomplete"},
+		}
+
+	case m.IsEditingContent:
+		return []shortcut{
+			{
+				Label: "[Esc] Done Editing",
+				Action: func(m *Model) tea.Cmd {
+					m.saveTabContent()
+					m.IsEditingContent = false
+					m.ACCandidates = nil
+					m.ACSelectedIdx = 0
+					m.StatusMsg = fmt.Sprintf("Edited %s (Press [S] to write to disk)", m.ActiveTab)
+					return nil
+				},
+			},
+			{
+				Label: "[Ctrl+S] Save",
+				Action: func(m *Model) tea.Cmd {
+					m.commitPendingEdits()
+					_ = m.saveCurrentRequest()
+					return nil
+				},
+			},
+			{
+				Label: "[Ctrl+R] Send",
+				Action: func(m *Model) tea.Cmd {
+					return m.sendCurrentRequest()
+				},
+			},
+			{Label: "[Enter] Newline"},
+			{Label: "[Tab] Indent"},
+		}
+
+	default:
+		return []shortcut{
+			{
+				Label: "[Space] Send",
+				Action: func(m *Model) tea.Cmd {
+					return m.sendCurrentRequest()
+				},
+			},
+			{
+				Label: "[U] Edit URL",
+				Action: func(m *Model) tea.Cmd {
+					if m.SelectedRequest != nil {
+						m.IsEditingURL = true
+						m.URLEditText = m.SelectedRequest.URL
+						m.URLCursor = len(m.URLEditText)
+						m.updateAutocomplete()
+					}
+					return nil
+				},
+			},
+			{
+				Label: "[E] Env",
+				Action: func(m *Model) tea.Cmd {
+					m.openEnvironmentModal()
+					return nil
+				},
+			},
+			{
+				Label: "[I] Edit Tab",
+				Action: func(m *Model) tea.Cmd {
+					if m.SelectedRequest != nil {
+						m.startEditingContent()
+					}
+					return nil
+				},
+			},
+			{
+				Label: "[N] New Req",
+				Action: func(m *Model) tea.Cmd {
+					m.openNewRequestPrompt()
+					return nil
+				},
+			},
+			{
+				Label: "[T] Theme",
+				Action: func(m *Model) tea.Cmd {
+					m.cycleTheme()
+					return nil
+				},
+			},
+			{
+				Label: "[M] Method",
+				Action: func(m *Model) tea.Cmd {
+					m.cycleMethod()
+					return nil
+				},
+			},
+			{
+				Label: "[S] Save",
+				Action: func(m *Model) tea.Cmd {
+					_ = m.saveCurrentRequest()
+					return nil
+				},
+			},
+			{
+				Label: "[q] Quit",
+				Action: func(m *Model) tea.Cmd {
+					return tea.Quit
+				},
+			},
+		}
+	}
 }
 
 func highlightVariables(text string, t theme.Theme) string {

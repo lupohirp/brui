@@ -903,4 +903,112 @@ func TestRequestPaneWheelScrollingAndProtection(t *testing.T) {
 	}
 }
 
+func TestDynamicHelpBarsAndSendShortcuts(t *testing.T) {
+	req := &bru.BrunoRequest{
+		ID:     "req1",
+		Name:   "Test Request",
+		Method: bru.MethodPost,
+		URL:    "https://example.com/api/test",
+	}
+	coll := &bru.BrunoCollection{
+		Name:     "TestColl",
+		Requests: []*bru.BrunoRequest{req},
+	}
+
+	m := NewModel(coll)
+	m.Width = 140
+	m.Height = 30
+
+	// 1. Normal mode: shows [Space] Send and [T] Theme
+	viewNormal := m.View()
+	if !strings.Contains(viewNormal, "[Space] Send") || !strings.Contains(viewNormal, "[T] Theme") {
+		t.Fatalf("Expected normal mode help to show [Space] Send and [T] Theme")
+	}
+
+	// 2. Pressing Space in normal mode starts async request sending
+	newM, cmd := m.Update(tea.KeyMsg{Type: tea.KeySpace, Runes: []rune{' '}})
+	m = newM.(Model)
+	if cmd == nil || !m.IsSending {
+		t.Fatalf("Expected pressing Space in normal mode to trigger sendCurrentRequest")
+	}
+	m.IsSending = false
+
+	// 3. Enter content editing mode (press 'i') -> help bar dynamically switches
+	newM, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'i'}})
+	m = newM.(Model)
+	if !m.IsEditingContent {
+		t.Fatalf("Expected IsEditingContent=true")
+	}
+	viewEdit := m.View()
+	if strings.Contains(viewEdit, "[T] Theme") || strings.Contains(viewEdit, "[Space] Send") {
+		t.Fatalf("Expected content edit mode NOT to show [T] Theme or [Space] Send")
+	}
+	if !strings.Contains(viewEdit, "[Esc] Done Editing") || !strings.Contains(viewEdit, "[Ctrl+R] Send") {
+		t.Fatalf("Expected content edit mode to show [Esc] Done Editing and [Ctrl+R] Send")
+	}
+
+	// 4. Pressing Ctrl+R inside content edit mode sends the request
+	newM, cmd = m.Update(tea.KeyMsg{Type: tea.KeyCtrlR})
+	m = newM.(Model)
+	if cmd == nil || !m.IsSending {
+		t.Fatalf("Expected pressing Ctrl+R during content editing to send request")
+	}
+	m.IsSending = false
+
+	// 5. Exit content editing via Esc, enter URL editing via 'u'
+	newM, _ = m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	m = newM.(Model)
+	newM, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'u'}})
+	m = newM.(Model)
+	viewURL := m.View()
+	if !strings.Contains(viewURL, "[Enter] Apply URL") || strings.Contains(viewURL, "[T] Theme") {
+		t.Fatalf("Expected URL edit mode to show [Enter] Apply URL and hide [T] Theme")
+	}
+}
+
+func TestParseBruBlocksNestedBraces(t *testing.T) {
+	raw := `meta {
+  name: Login
+  type: http
+  seq: 1
+}
+
+post {
+  url: {{baseUrl}}/login
+  body: json
+}
+
+body:json {
+  {
+    "credentials": {
+      "username": "alice",
+      "password": "secret"
+    }
+  }
+}
+
+script:pre-request {
+  if (!bru.getVar("token")) {
+    await bru.runRequest("_Auth/Get Token");
+  }
+}
+`
+	blocks := bru.ParseBruBlocks(raw)
+	var bodyBlock, scriptBlock string
+	for _, b := range blocks {
+		if b.Name == "body" && b.SubName == "json" {
+			bodyBlock = strings.Join(b.Content, "\n")
+		} else if b.Name == "script" && b.SubName == "pre-request" {
+			scriptBlock = strings.Join(b.Content, "\n")
+		}
+	}
+	if !strings.Contains(bodyBlock, `"password": "secret"`) {
+		t.Fatalf("Expected nested JSON body to be preserved, got:\n%s", bodyBlock)
+	}
+	if !strings.Contains(scriptBlock, `bru.runRequest`) {
+		t.Fatalf("Expected pre-request script with nested braces to be preserved, got:\n%s", scriptBlock)
+	}
+}
+
+
 

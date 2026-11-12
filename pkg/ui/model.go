@@ -10,6 +10,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 	"github.com/lupohirp/brui/pkg/bru"
 	"github.com/lupohirp/brui/pkg/theme"
 )
@@ -969,9 +970,9 @@ func (m Model) renderHeader(width, height int) string {
 	l3 := fmt.Sprintf(" %s  %s", dog3, hintStyle.Render("[↑/↓] Select   [Space] Send   [1-5] Tabs   [U] Edit URL   [E] Env   [S] Save   [q] Quit"))
 
 	boxStyle := lipgloss.NewStyle().
-		Width(width).
+		Width(width - 2).
 		MaxWidth(width).
-		Height(height).
+		Height(height - 2).
 		MaxHeight(height).
 		BorderStyle(lipgloss.RoundedBorder()).
 		BorderForeground(lipgloss.Color(m.Theme.Border))
@@ -1103,9 +1104,9 @@ func (m Model) renderSidebar(width, height int) string {
 	}
 
 	boxStyle := lipgloss.NewStyle().
-		Width(width).
+		Width(width - 2).
 		MaxWidth(width).
-		Height(height).
+		Height(height - 2).
 		MaxHeight(height).
 		BorderStyle(lipgloss.RoundedBorder()).
 		BorderForeground(lipgloss.Color(m.Theme.BorderFocus))
@@ -1244,9 +1245,9 @@ func (m Model) renderRequestPane(width, height int) string {
 	}
 
 	boxStyle := lipgloss.NewStyle().
-		Width(width).
+		Width(width - 2).
 		MaxWidth(width).
-		Height(height).
+		Height(height - 2).
 		MaxHeight(height).
 		BorderStyle(lipgloss.RoundedBorder()).
 		BorderForeground(lipgloss.Color(m.Theme.Border))
@@ -1322,9 +1323,9 @@ func (m Model) renderResponsePane(width, height int) string {
 	}
 
 	boxStyle := lipgloss.NewStyle().
-		Width(width).
+		Width(width - 2).
 		MaxWidth(width).
-		Height(height).
+		Height(height - 2).
 		MaxHeight(height).
 		BorderStyle(lipgloss.RoundedBorder()).
 		BorderForeground(lipgloss.Color(m.Theme.Border))
@@ -1375,7 +1376,13 @@ func (m Model) renderStatusBar(width int) string {
 		Bold(true).
 		Render(m.StatusMsg)
 
-	return barStyle.Render(fmt.Sprintf(" %s  │  %s", shortcuts, status))
+	barText := fmt.Sprintf(" %s  │  %s", shortcuts, status)
+	w := ansi.StringWidth(barText)
+	if w < width {
+		barText += strings.Repeat(" ", width-w)
+	}
+
+	return barStyle.Render(barText)
 }
 
 func highlightVariables(text string, t theme.Theme) string {
@@ -1406,11 +1413,12 @@ func (m Model) renderEnvironmentModal() string {
 
 	innerW := modalW - 2
 	innerH := modalH - 2
+	modalBg := lipgloss.Color("#181825")
 
-	accent := lipgloss.NewStyle().Foreground(lipgloss.Color(m.Theme.Accent)).Bold(true)
-	subtext := lipgloss.NewStyle().Foreground(lipgloss.Color(m.Theme.Subtext))
-	activeStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(m.Theme.Success)).Bold(true)
-	closeStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(m.Theme.Delete)).Bold(true)
+	accent := lipgloss.NewStyle().Foreground(lipgloss.Color(m.Theme.Accent)).Background(modalBg).Bold(true)
+	subtext := lipgloss.NewStyle().Foreground(lipgloss.Color(m.Theme.Subtext)).Background(modalBg)
+	activeStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(m.Theme.Success)).Background(modalBg).Bold(true)
+	closeStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(m.Theme.Delete)).Background(modalBg).Bold(true)
 
 	activeName := m.Coll.ActiveEnvironment
 	if activeName == "" {
@@ -1418,13 +1426,14 @@ func (m Model) renderEnvironmentModal() string {
 	}
 	titleLeft := fmt.Sprintf(" %s  %s %s", accent.Render("ENVIRONMENT & VARIABLES MANAGER"), subtext.Render("Active:"), activeStyle.Render("["+activeName+"]"))
 	closeBtn := closeStyle.Render("[Esc Close]")
-	titleSpace := innerW - lipgloss.Width(titleLeft) - lipgloss.Width(closeBtn) - 1
+	titleSpace := innerW - ansi.StringWidth(titleLeft) - ansi.StringWidth(closeBtn) - 1
 	if titleSpace < 1 {
 		titleSpace = 1
 	}
-	row0 := titleLeft + strings.Repeat(" ", titleSpace) + closeBtn
+	row0Text := titleLeft + strings.Repeat(" ", titleSpace) + closeBtn
+	row0 := lipgloss.NewStyle().Width(innerW).MaxWidth(innerW).Background(modalBg).Render(row0Text)
 
-	row1 := lipgloss.NewStyle().Foreground(lipgloss.Color(m.Theme.Border)).Render(strings.Repeat("─", innerW))
+	row1 := lipgloss.NewStyle().Width(innerW).MaxWidth(innerW).Background(modalBg).Foreground(lipgloss.Color(m.Theme.Border)).Render(strings.Repeat("─", innerW))
 
 	leftW := innerW * 35 / 100
 	if leftW < 18 {
@@ -1457,7 +1466,7 @@ func (m Model) renderEnvironmentModal() string {
 				activeTag = " " + activeStyle.Render("[Active]")
 			}
 			label := it.Name
-			maxLabel := leftW - len(activeTag) - 2
+			maxLabel := leftW - ansi.StringWidth(activeTag) - 2
 			if maxLabel < 1 {
 				maxLabel = 1
 			}
@@ -1482,11 +1491,12 @@ func (m Model) renderEnvironmentModal() string {
 					MaxWidth(leftW).
 					Height(1).
 					MaxHeight(1).
+					Background(modalBg).
 					Foreground(lipgloss.Color(m.Theme.Fg))
 				leftLines = append(leftLines, norm.Render(rowText))
 			}
 		} else {
-			leftLines = append(leftLines, strings.Repeat(" ", leftW))
+			leftLines = append(leftLines, lipgloss.NewStyle().Width(leftW).MaxWidth(leftW).Height(1).MaxHeight(1).Background(modalBg).Render(strings.Repeat(" ", leftW)))
 		}
 	}
 
@@ -1507,13 +1517,13 @@ func (m Model) renderEnvironmentModal() string {
 		sort.Strings(varKeys)
 		for _, k := range varKeys {
 			val := selectedEnv.Variables[k]
-			line := fmt.Sprintf(" %s: %s", lipgloss.NewStyle().Bold(true).Render(k), subtext.Render(val))
-			if lipgloss.Width(line) > rightW {
+			line := fmt.Sprintf(" %s: %s", lipgloss.NewStyle().Background(modalBg).Bold(true).Render(k), subtext.Render(val))
+			if ansi.StringWidth(line) > rightW {
 				maxVal := rightW - len(k) - 4
 				if maxVal > 3 {
 					val = val[:maxVal-1] + "…"
 				}
-				line = fmt.Sprintf(" %s: %s", lipgloss.NewStyle().Bold(true).Render(k), subtext.Render(val))
+				line = fmt.Sprintf(" %s: %s", lipgloss.NewStyle().Background(modalBg).Bold(true).Render(k), subtext.Render(val))
 			}
 			rightLines = append(rightLines, line)
 		}
@@ -1522,33 +1532,33 @@ func (m Model) renderEnvironmentModal() string {
 	var finalRightLines []string
 	for r := 0; r < contentH; r++ {
 		if r < len(rightLines) {
-			finalRightLines = append(finalRightLines, lipgloss.NewStyle().Width(rightW).MaxWidth(rightW).Height(1).MaxHeight(1).Render(rightLines[r]))
+			finalRightLines = append(finalRightLines, lipgloss.NewStyle().Width(rightW).MaxWidth(rightW).Height(1).MaxHeight(1).Background(modalBg).Render(rightLines[r]))
 		} else {
-			finalRightLines = append(finalRightLines, strings.Repeat(" ", rightW))
+			finalRightLines = append(finalRightLines, lipgloss.NewStyle().Width(rightW).MaxWidth(rightW).Height(1).MaxHeight(1).Background(modalBg).Render(strings.Repeat(" ", rightW)))
 		}
 	}
 
-	sepCol := lipgloss.NewStyle().Foreground(lipgloss.Color(m.Theme.Border)).Render("│")
+	sepCol := lipgloss.NewStyle().Background(modalBg).Foreground(lipgloss.Color(m.Theme.Border)).Render("│")
 	var middleRows []string
 	for r := 0; r < contentH; r++ {
 		middleRows = append(middleRows, leftLines[r]+sepCol+finalRightLines[r])
 	}
 
 	footer := subtext.Render(" [↑/↓] Navigate   [Enter/Space] Activate Environment   [Esc] Close")
-	footerLine := lipgloss.NewStyle().Width(innerW).Render(" " + footer)
+	footerLine := lipgloss.NewStyle().Width(innerW).MaxWidth(innerW).Background(modalBg).Foreground(lipgloss.Color(m.Theme.Subtext)).Render(" " + footer)
 
 	allModalRows := []string{row0, row1}
 	allModalRows = append(allModalRows, middleRows...)
 	allModalRows = append(allModalRows, footerLine)
 
 	modalBoxStyle := lipgloss.NewStyle().
-		Width(modalW).
+		Width(modalW - 2).
 		MaxWidth(modalW).
-		Height(modalH).
+		Height(modalH - 2).
 		MaxHeight(modalH).
 		BorderStyle(lipgloss.RoundedBorder()).
 		BorderForeground(lipgloss.Color(m.Theme.Accent)).
-		Background(lipgloss.Color("#181825"))
+		Background(modalBg)
 
 	return modalBoxStyle.Render(strings.Join(allModalRows, "\n"))
 }
@@ -1558,7 +1568,7 @@ func overlayModal(base string, modal string, screenW, screenH int) string {
 	modalLines := strings.Split(modal, "\n")
 
 	modalH := len(modalLines)
-	modalW := lipgloss.Width(modalLines[0])
+	modalW := ansi.StringWidth(modalLines[0])
 
 	startRow := (screenH - modalH) / 2
 	startCol := (screenW - modalW) / 2
@@ -1571,13 +1581,22 @@ func overlayModal(base string, modal string, screenW, screenH int) string {
 
 	for r := 0; r < modalH && startRow+r < len(baseLines); r++ {
 		mLine := modalLines[r]
-		padLeft := strings.Repeat(" ", startCol)
-		padRight := ""
-		remain := screenW - startCol - modalW
-		if remain > 0 {
-			padRight = strings.Repeat(" ", remain)
+		bLine := baseLines[startRow+r]
+
+		left := ansi.Truncate(bLine, startCol, "")
+		leftW := ansi.StringWidth(left)
+		if leftW < startCol {
+			left += strings.Repeat(" ", startCol-leftW)
 		}
-		baseLines[startRow+r] = padLeft + mLine + padRight
+
+		right := ansi.TruncateLeft(bLine, startCol+modalW, "")
+		rightW := ansi.StringWidth(right)
+		remain := screenW - (startCol + modalW)
+		if remain > 0 && rightW < remain {
+			right += strings.Repeat(" ", remain-rightW)
+		}
+
+		baseLines[startRow+r] = left + mLine + right
 	}
 
 	return strings.Join(baseLines, "\n")

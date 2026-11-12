@@ -6,6 +6,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 	"github.com/lupohirp/brui/pkg/bru"
 )
 
@@ -352,5 +353,101 @@ func TestEnvironmentModal(t *testing.T) {
 	}
 	if !strings.Contains(view, "SIT") {
 		t.Errorf("Expected view to contain SIT environment")
+	}
+}
+
+func TestOverlayModalPreservesBackground(t *testing.T) {
+	bgLine := "│ POST Reset Password - Send OTP │ Right Pane Content Here! │"
+	modalLine := "╭── MODAL ──╮"
+	// screenW = 60
+	// startCol = 10, modalW = 13
+	screenW := ansi.StringWidth(bgLine)
+	startCol := 10
+	modalW := ansi.StringWidth(modalLine)
+
+	left := ansi.Truncate(bgLine, startCol, "")
+	right := ansi.TruncateLeft(bgLine, startCol+modalW, "")
+	combined := left + modalLine + right
+
+	if ansi.StringWidth(combined) != screenW {
+		t.Fatalf("Expected combined width %d, got %d", screenW, ansi.StringWidth(combined))
+	}
+	if !strings.HasPrefix(combined, "│ POST Res") {
+		t.Fatalf("Expected left to be preserved, got %q", combined)
+	}
+	if !strings.HasSuffix(combined, "Content Here! │") {
+		t.Fatalf("Expected right to be preserved, got %q", combined)
+	}
+}
+
+func TestRenderHeaderLines(t *testing.T) {
+	coll := &bru.BrunoCollection{Name: "APIGEE"}
+	m := NewModel(coll)
+	header := m.renderHeader(100, 5)
+	lines := strings.Split(header, "\n")
+	t.Logf("Header lines count: %d", len(lines))
+	for i, l := range lines {
+		t.Logf("Header line %d: %q", i, l)
+	}
+}
+
+func TestLipglossBorderHeightMath(t *testing.T) {
+	s1 := lipgloss.NewStyle().
+		Width(50).
+		Height(3).
+		BorderStyle(lipgloss.RoundedBorder())
+	out1 := s1.Render("line 1\nline 2\nline 3")
+	lines1 := strings.Split(out1, "\n")
+	t.Logf("Height(3) with border: %d lines", len(lines1))
+	for i, l := range lines1 {
+		t.Logf("s1 line %d: %q", i, l)
+	}
+
+	s2 := lipgloss.NewStyle().
+		Width(50).
+		Height(5).
+		BorderStyle(lipgloss.RoundedBorder())
+	out2 := s2.Render("line 1\nline 2\nline 3")
+	lines2 := strings.Split(out2, "\n")
+	t.Logf("Height(5) with border: %d lines", len(lines2))
+	for i, l := range lines2 {
+		t.Logf("s2 line %d: %q", i, l)
+	}
+}
+
+func TestBoxOuterDimensionsWithBorders(t *testing.T) {
+	W := 60
+	H := 10
+
+	// We want the box to be EXACTLY W x H on screen, with top/bottom/left/right rounded border
+	s := lipgloss.NewStyle().
+		Width(W - 2).
+		Height(H - 2).
+		MaxWidth(W).
+		MaxHeight(H).
+		BorderStyle(lipgloss.RoundedBorder())
+
+	out := s.Render("hello\nworld")
+	lines := strings.Split(out, "\n")
+
+	t.Logf("Total lines: %d (expected %d)", len(lines), H)
+	if len(lines) != H {
+		t.Fatalf("Expected %d lines, got %d", H, len(lines))
+	}
+	t.Logf("Line 0 (top border): %q", lines[0])
+	t.Logf("Line %d (bottom border): %q", H-1, lines[H-1])
+
+	if !strings.HasPrefix(lines[0], "╭") || !strings.HasSuffix(lines[0], "╮") {
+		t.Errorf("Line 0 is not top border: %q", lines[0])
+	}
+	if !strings.HasPrefix(lines[H-1], "╰") || !strings.HasSuffix(lines[H-1], "╯") {
+		t.Errorf("Line %d is not bottom border: %q", H-1, lines[H-1])
+	}
+
+	for i, l := range lines {
+		w := ansi.StringWidth(l)
+		if w != W {
+			t.Errorf("Line %d width is %d, expected %d: %q", i, w, W, l)
+		}
 	}
 }

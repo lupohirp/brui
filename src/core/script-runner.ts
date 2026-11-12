@@ -209,9 +209,9 @@ export class ScriptRunner {
     const test = (title: string, fn: () => void) => {
       try {
         fn();
-        scriptConsole.info(`✔ Test passed: ${title}`);
+        scriptConsole.info(`PASS: ${title}`);
       } catch (err: any) {
-        scriptConsole.error(`✖ Test failed: ${title} - ${err.message}`);
+        scriptConsole.error(`FAIL: ${title} - ${err.message}`);
       }
     };
 

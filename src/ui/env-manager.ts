@@ -91,19 +91,19 @@ export class EnvironmentManagerModal {
       left: 1,
       right: 12,
       height: 2,
-      content: ` {bold}{${t.accent}-fg}🌍 ENVIRONMENT & VARIABLES MANAGER{/}  ` +
+      content: ` {bold}{${t.accent}-fg}ENVIRONMENT & VARIABLES MANAGER{/}  ` +
                `{${t.subtext}-fg}Active:{/} {bold}{${t.options}-fg}[${this.collection.activeEnvironment || 'None'}]{/} `,
       tags: true
     });
 
-    // Top Right Close Button [ ✕ Close ]
+    // Top Right Close Button [X Close]
     this.closeBtn = blessed.box({
       parent: this.modal,
       top: 0,
       right: 1,
       width: 11,
       height: 1,
-      content: `{bold}{${t.delete}-fg}[ ✕ Close ]{/}`,
+      content: `{bold}{${t.delete}-fg}[X Close]{/}`,
       tags: true,
       mouse: true,
       style: {
@@ -207,7 +207,7 @@ export class EnvironmentManagerModal {
 
     const items = envs.map(e => {
       const isCur = e.name === this.collection.activeEnvironment;
-      const bullet = isCur ? `{${t.get}-fg}● (active){/} ` : `{${t.subtext}-fg}○{/} `;
+      const bullet = isCur ? `{${t.get}-fg}* (active){/} ` : `{${t.subtext}-fg}o{/} `;
       const varCount = Object.keys(e.variables).length;
       return `${bullet}{bold}${e.name}{/} {${t.subtext}-fg}(${varCount}){/}`;
     });
@@ -236,7 +236,7 @@ export class EnvironmentManagerModal {
       const isSecret = key.toLowerCase().includes('secret') || key.toLowerCase().includes('password');
       let displayVal = String(val ?? '');
       if (isSecret && displayVal.length > 0) {
-        displayVal = '•••••••• (' + displayVal.slice(0, 3) + '...)';
+        displayVal = '******** (' + displayVal.slice(0, 3) + '...)';
       } else if (displayVal.length > 55) {
         displayVal = displayVal.slice(0, 52) + '...';
       }
@@ -252,7 +252,7 @@ export class EnvironmentManagerModal {
     const isCur = env?.name === this.collection.activeEnvironment;
 
     const activateBtn = isCur
-      ? `{${t.subtext}-fg}[✔ Active]{/}`
+      ? `{${t.subtext}-fg}[Active]{/}`
       : `{bold}{${t.get}-fg}[A: Set Active]{/}`;
 
     this.footerBar.setContent(
@@ -291,7 +291,7 @@ export class EnvironmentManagerModal {
       this.collection.activeEnvironment = env.name;
       this.renderEnvsList();
       this.renderFooter();
-      this.setStatus(`✔ Active environment changed to: [${env.name}]`);
+      this.setStatus(`Active environment changed to: [${env.name}]`);
       this.onUpdate();
     }
   }
@@ -314,7 +314,7 @@ export class EnvironmentManagerModal {
       }
     };
 
-    // Close button click [ ✕ Close ]
+    // Close button click [X Close]
     this.closeBtn.on('click', () => {
       closeModal();
     });
@@ -540,7 +540,7 @@ export class EnvironmentManagerModal {
           this.collection.runtimeVariables[varName] = value;
         }
         this.renderVarsList();
-        this.setStatus(`✔ Updated "${varName}" = "${value}". Press [S] to save to file.`);
+        this.setStatus(`Updated "${varName}" = "${value}". Press [S] to save to file.`);
         this.onUpdate();
       }
       this.screen.render();
@@ -603,7 +603,7 @@ export class EnvironmentManagerModal {
               this.collection.runtimeVariables[cleanName] = varValue;
             }
             this.renderVarsList();
-            this.setStatus(`✔ Added "${cleanName}". Press [S] to save to file.`);
+            this.setStatus(`Added "${cleanName}". Press [S] to save to file.`);
             this.onUpdate();
           }
           this.screen.render();
@@ -661,9 +661,9 @@ export class EnvironmentManagerModal {
       fs.writeFileSync(filePath, bruContent, 'utf8');
 
       env.filePath = filePath;
-      this.setStatus(`✔ Successfully saved to ${path.basename(filePath)}!`);
+      this.setStatus(`Successfully saved to ${path.basename(filePath)}!`);
     } catch (err: any) {
-      this.setStatus(`✖ Failed to save: ${err.message}`);
+      this.setStatus(`Save failed: ${err.message}`);
     }
   }
 }

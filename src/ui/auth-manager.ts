@@ -99,20 +99,20 @@ export class AuthManagerModal {
       left: 1,
       right: 12,
       height: 2,
-      content: ` {bold}{${t.accent}-fg}🔐 AUTHENTICATION MANAGER{/}  ` +
+      content: ` {bold}{${t.accent}-fg}AUTHENTICATION MANAGER{/}  ` +
                `{${t.subtext}-fg}Request:{/} {bold}{${t.put}-fg}[${this.request.method} ${this.request.name}]{/}  ` +
                `{${t.subtext}-fg}Mode:{/} {bold}{${t.options}-fg}[${this.request.authType.toUpperCase()}]{/} `,
       tags: true
     });
 
-    // Close Button [ ✕ Close ]
+    // Close Button [X Close]
     this.closeBtn = blessed.box({
       parent: this.modal,
       top: 0,
       right: 1,
       width: 11,
       height: 1,
-      content: `{bold}{${t.delete}-fg}[ ✕ Close ]{/}`,
+      content: `{bold}{${t.delete}-fg}[X Close]{/}`,
       tags: true,
       mouse: true,
       style: {
@@ -239,7 +239,7 @@ export class AuthManagerModal {
     const t = this.getTheme();
     const items = this.authModes.map(m => {
       const isCur = m.id === this.request.authType;
-      const bullet = isCur ? `{${t.get}-fg}● (active){/} ` : `{${t.subtext}-fg}○{/} `;
+      const bullet = isCur ? `{${t.get}-fg}* (active){/} ` : `{${t.subtext}-fg}o{/} `;
       return `${bullet}{bold}${m.label}{/}`;
     });
     this.modesList.setItems(items);
@@ -294,16 +294,16 @@ export class AuthManagerModal {
       items.push('');
       if (tokenInfo.token) {
         const expStr = tokenInfo.isExpired
-          ? `{${t.statusError}-fg}▲ EXPIRED{/}`
-          : `{${t.statusSuccess}-fg}● VALID (Expires in ${tokenInfo.expiresInSec}s){/}`;
+          ? `{${t.statusError}-fg}[EXPIRED]{/}`
+          : `{${t.statusSuccess}-fg}[VALID] (Expires in ${tokenInfo.expiresInSec}s){/}`;
         items.push(`{bold}Access Token Status:{/} ${expStr}`);
         items.push(`  {${t.subtext}-fg}Token:{/} ${tokenInfo.token.slice(0, 45)}...`);
       } else {
-        items.push(`{bold}Access Token Status:{/} {${t.subtext}-fg}○ No token in environment. Press [O] or click below to authenticate.{/}`);
+        items.push(`{bold}Access Token Status:{/} {${t.subtext}-fg}No token in environment. Press [O] or click below to authenticate.{/}`);
       }
 
       items.push('');
-      items.push(`{bold}{${t.get}-fg}[ ⚡ Click here or Press [O] to Authenticate / Renew Token ]{/}`);
+      items.push(`{bold}{${t.get}-fg}[ Click here or Press [O] to Authenticate / Renew Token ]{/}`);
     } else if (mode === 'none') {
       items.push(`{${t.subtext}-fg}No authentication will be sent with this request.{/}`);
       items.push('');
@@ -312,58 +312,58 @@ export class AuthManagerModal {
       const rawToken = this.request.authBearerToken || '{{access_token}}';
       const resolved = Interpolator.interpolate(rawToken, this.collection);
 
-      items.push(`{bold}{${t.accent}-fg}1. Token Template:{/} {${t.fg}}${rawToken}{/}  {${t.put}-fg}[ ✏ Edit ]{/}`);
+      items.push(`{bold}{${t.accent}-fg}1. Token Template:{/} {${t.fg}}${rawToken}{/}  {${t.put}-fg}[Edit]{/}`);
       items.push(`   {${t.subtext}-fg}Resolved Preview:{/} ${resolved ? resolved.slice(0, 50) + '...' : '{#6c7086-fg}(empty){/}'}`);
       items.push('');
       if (tokenInfo.token) {
         const expStr = tokenInfo.isExpired
-          ? `{${t.statusError}-fg}▲ Token in Environment is EXPIRED{/}`
-          : `{${t.statusSuccess}-fg}● Active Environment Token is VALID (${tokenInfo.expiresInSec}s){/}`;
+          ? `{${t.statusError}-fg}[EXPIRED] Token in Environment is EXPIRED{/}`
+          : `{${t.statusSuccess}-fg}[VALID] Active Environment Token is VALID (${tokenInfo.expiresInSec}s){/}`;
         items.push(`{bold}Status:{/} ${expStr}`);
       }
       items.push('');
-      items.push(`{bold}{${t.options}-fg}[ 💾 Click here or Press [S] to Save Bearer Auth to .bru ]{/}`);
+      items.push(`{bold}{${t.options}-fg}[ Click here or Press [S] to Save Bearer Auth to .bru ]{/}`);
     } else if (mode === 'basic') {
       const user = this.request.authBasicUser || '';
       const pass = this.request.authBasicPassword || '';
-      items.push(`{bold}{${t.accent}-fg}1. Username:{/} {${t.fg}}${user || '{#6c7086-fg}(empty){/}'}{/}  {${t.put}-fg}[ ✏ Edit ]{/}`);
-      items.push(`{bold}{${t.accent}-fg}2. Password:{/} {${t.fg}}${pass ? '••••••••' : '{#6c7086-fg}(empty){/}'}{/}  {${t.put}-fg}[ ✏ Edit ]{/}`);
+      items.push(`{bold}{${t.accent}-fg}1. Username:{/} {${t.fg}}${user || '{#6c7086-fg}(empty){/}'}{/}  {${t.put}-fg}[Edit]{/}`);
+      items.push(`{bold}{${t.accent}-fg}2. Password:{/} {${t.fg}}${pass ? '********' : '{#6c7086-fg}(empty){/}'}{/}  {${t.put}-fg}[Edit]{/}`);
       items.push('');
-      items.push(`{bold}{${t.options}-fg}[ 💾 Click here or Press [S] to Save Basic Auth to .bru ]{/}`);
+      items.push(`{bold}{${t.options}-fg}[ Click here or Press [S] to Save Basic Auth to .bru ]{/}`);
     } else if (mode === 'oauth2') {
       const o = this.request.authOAuth2!;
       const grant = o.grantType;
 
       items.push(`{bold}{${t.accent}-fg}1. Grant Type:{/} {bold}{${t.put}-fg}[ ${grant.toUpperCase()} ]{/}  {${t.subtext}-fg}(Enter/Click to toggle){/}`);
-      items.push(`{bold}{${t.accent}-fg}2. Token URL (Access Token URL):{/} {${t.fg}}${o.tokenUrl || '{#6c7086-fg}(empty){/}'}{/}  {${t.put}-fg}[ ✏ Edit ]{/}`);
-      items.push(`{bold}{${t.accent}-fg}3. Client ID:{/} {${t.fg}}${o.clientId || '{#6c7086-fg}(empty){/}'}{/}  {${t.put}-fg}[ ✏ Edit ]{/}`);
-      items.push(`{bold}{${t.accent}-fg}4. Client Secret:{/} {${t.fg}}${o.clientSecret ? '••••••••' : '{#6c7086-fg}(empty){/}'}{/}  {${t.put}-fg}[ ✏ Edit ]{/}`);
+      items.push(`{bold}{${t.accent}-fg}2. Token URL (Access Token URL):{/} {${t.fg}}${o.tokenUrl || '{#6c7086-fg}(empty){/}'}{/}  {${t.put}-fg}[Edit]{/}`);
+      items.push(`{bold}{${t.accent}-fg}3. Client ID:{/} {${t.fg}}${o.clientId || '{#6c7086-fg}(empty){/}'}{/}  {${t.put}-fg}[Edit]{/}`);
+      items.push(`{bold}{${t.accent}-fg}4. Client Secret:{/} {${t.fg}}${o.clientSecret ? '********' : '{#6c7086-fg}(empty){/}'}{/}  {${t.put}-fg}[Edit]{/}`);
 
       if (grant === 'password') {
-        items.push(`{bold}{${t.accent}-fg}5. Username:{/} {${t.fg}}${o.username || '{#6c7086-fg}(empty){/}'}{/}  {${t.put}-fg}[ ✏ Edit ]{/}`);
-        items.push(`{bold}{${t.accent}-fg}6. Password:{/} {${t.fg}}${o.password ? '••••••••' : '{#6c7086-fg}(empty){/}'}{/}  {${t.put}-fg}[ ✏ Edit ]{/}`);
+        items.push(`{bold}{${t.accent}-fg}5. Username:{/} {${t.fg}}${o.username || '{#6c7086-fg}(empty){/}'}{/}  {${t.put}-fg}[Edit]{/}`);
+        items.push(`{bold}{${t.accent}-fg}6. Password:{/} {${t.fg}}${o.password ? '********' : '{#6c7086-fg}(empty){/}'}{/}  {${t.put}-fg}[Edit]{/}`);
       } else if (grant === 'authorization_code') {
-        items.push(`{bold}{${t.accent}-fg}5. Authorization URL:{/} {${t.fg}}${o.authUrl || '{#6c7086-fg}(empty){/}'}{/}  {${t.put}-fg}[ ✏ Edit ]{/}`);
-        items.push(`{bold}{${t.accent}-fg}6. Callback URL:{/} {${t.fg}}${o.redirectUri || '{#6c7086-fg}(empty){/}'}{/}  {${t.put}-fg}[ ✏ Edit ]{/}`);
-        items.push(`{bold}{${t.accent}-fg}7. PKCE:{/} {${t.fg}}${o.pkce !== false ? '{#a6e3a1-fg}[✔ Enabled]{/}' : '{#f38ba8-fg}[✘ Disabled]{/}'}{/}  {${t.put}-fg}[ Toggle ]{/}`);
+        items.push(`{bold}{${t.accent}-fg}5. Authorization URL:{/} {${t.fg}}${o.authUrl || '{#6c7086-fg}(empty){/}'}{/}  {${t.put}-fg}[Edit]{/}`);
+        items.push(`{bold}{${t.accent}-fg}6. Callback URL:{/} {${t.fg}}${o.redirectUri || '{#6c7086-fg}(empty){/}'}{/}  {${t.put}-fg}[Edit]{/}`);
+        items.push(`{bold}{${t.accent}-fg}7. PKCE:{/} {${t.fg}}${o.pkce !== false ? '{#a6e3a1-fg}[Enabled]{/}' : '{#f38ba8-fg}[Disabled]{/}'}{/}  {${t.put}-fg}[Toggle]{/}`);
       }
 
-      items.push(`{bold}{${t.accent}-fg}Scope:{/} {${t.fg}}${o.scope || 'openid'}{/}  {${t.put}-fg}[ ✏ Edit ]{/}`);
+      items.push(`{bold}{${t.accent}-fg}Scope:{/} {${t.fg}}${o.scope || 'openid'}{/}  {${t.put}-fg}[Edit]{/}`);
       items.push('');
 
       if (tokenInfo.token) {
         const expStr = tokenInfo.isExpired
-          ? `{${t.statusError}-fg}▲ Token EXPIRED{/}`
-          : `{${t.statusSuccess}-fg}● Token VALID (Expires in ${tokenInfo.expiresInSec}s){/}`;
+          ? `{${t.statusError}-fg}[EXPIRED]{/}`
+          : `{${t.statusSuccess}-fg}[VALID] (Expires in ${tokenInfo.expiresInSec}s){/}`;
         items.push(`{bold}Current Token:{/} ${expStr}`);
         items.push(`  {${t.subtext}-fg}Value:{/} ${tokenInfo.token.slice(0, 45)}...`);
       } else {
-        items.push(`{bold}Current Token:{/} {${t.subtext}-fg}○ No token found.{/}`);
+        items.push(`{bold}Current Token:{/} {${t.subtext}-fg}No token found.{/}`);
       }
 
       items.push('');
-      items.push(`{bold}{${t.get}-fg}[ ⚡ GET ACCESS TOKEN NOW (Press O or Click) ]{/}`);
-      items.push(`{bold}{${t.options}-fg}[ 💾 SAVE TO .BRU FILE (Press S or Click) ]{/}`);
+      items.push(`{bold}{${t.get}-fg}[ GET ACCESS TOKEN NOW (Press O or Click) ]{/}`);
+      items.push(`{bold}{${t.options}-fg}[ SAVE TO .BRU FILE (Press S or Click) ]{/}`);
     }
 
     this.fieldsList.setItems(items);
@@ -391,9 +391,9 @@ export class AuthManagerModal {
     const t = this.getTheme();
     if (info.token) {
       if (info.isExpired) {
-        this.setStatus(`{${t.statusError}-fg}▲ Token in environment is EXPIRED. Press [O] to renew.{/}`);
+        this.setStatus(`{${t.statusError}-fg}[EXPIRED] Token in environment is EXPIRED. Press [O] to renew.{/}`);
       } else {
-        this.setStatus(`{${t.statusSuccess}-fg}✔ Active token ready (expires in ${info.expiresInSec}s). Ready to send requests.{/}`);
+        this.setStatus(`{${t.statusSuccess}-fg}Active token ready (expires in ${info.expiresInSec}s). Ready to send requests.{/}`);
       }
     } else {
       this.setStatus(`{${t.subtext}-fg}Ready. Select mode and configure authentication.{/}`);
@@ -441,7 +441,7 @@ export class AuthManagerModal {
       }
     };
 
-    // Close button click [ ✕ Close ]
+    // Close button click [X Close]
     this.closeBtn.on('click', () => {
       closeModal();
     });
@@ -719,7 +719,7 @@ export class AuthManagerModal {
     if (this.isAuthenticating) return;
     this.isAuthenticating = true;
     const t = this.getTheme();
-    this.setStatus(`{bold}{${t.accent}-fg}⚡ Authenticating... Please wait.{/}`);
+    this.setStatus(`{bold}{${t.accent}-fg}Authenticating... Please wait.{/}`);
 
     try {
       let cfg: OAuth2Config | undefined = this.request.authOAuth2;
@@ -756,11 +756,11 @@ export class AuthManagerModal {
         this.setStatus(`{${t.accent}-fg}${msg}{/}`);
       });
 
-      this.setStatus(`{${t.statusSuccess}-fg}✔ OAuth2 Success! Access token received: ${res.accessToken.slice(0, 20)}... (Expires in ${res.expiresIn || 300}s){/}`);
+      this.setStatus(`{${t.statusSuccess}-fg}OAuth2 Success! Access token received: ${res.accessToken.slice(0, 20)}... (Expires in ${res.expiresIn || 300}s){/}`);
       this.renderFieldsList();
       this.onUpdate();
     } catch (err: any) {
-      this.setStatus(`{${t.statusError}-fg}✖ Authentication failed: ${err.message}{/}`);
+      this.setStatus(`{${t.statusError}-fg}Authentication failed: ${err.message}{/}`);
     } finally {
       this.isAuthenticating = false;
     }
@@ -809,9 +809,9 @@ export class AuthManagerModal {
 
       const updated = jsonToBruV2(json);
       fs.writeFileSync(filePath, updated, 'utf8');
-      this.setStatus(`✔ Successfully saved auth configuration to ${path.basename(filePath)}!`);
+      this.setStatus(`Successfully saved auth configuration to ${path.basename(filePath)}!`);
     } catch (err: any) {
-      this.setStatus(`✖ Failed to save auth: ${err.message}`);
+      this.setStatus(`Failed to save auth: ${err.message}`);
     }
   }
 }

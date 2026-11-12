@@ -357,12 +357,16 @@ export class BruiApp {
     const t = this.getTheme();
     const envName = this.collection.activeEnvironment || 'None';
     const authStatus = this.collection.runtimeVariables['access_token']
-      ? `{${t.get}-fg}● Authenticated{/}`
-      : `{${t.subtext}-fg}○ Not Authenticated{/}`;
+      ? `{${t.get}-fg}[OK: Auth]{/}`
+      : `{${t.subtext}-fg}[--: No Auth]{/}`;
+
+    // Bruno's golden retriever pixel dog icon:
+    // Fur: #f4aa42, Eyes: #cdd6f4, Nose/Tongue: #ea5a47
+    const brunoDog = `{#f4aa42-fg}◖{#cdd6f4-fg}•{#ea5a47-fg}ᴥ{#cdd6f4-fg}•{#f4aa42-fg}◗{/}`;
 
     this.headerBox.setContent(
-      ` {bold}{${t.accent}-fg}⚡ BRUI{/}  ` +
-      `{${t.subtext}-fg}Collection:{/} {bold}{${t.put}-fg}[📁 ${this.collection.name}]{/}  ` +
+      ` {bold}${brunoDog} {#f4aa42-fg}BRUI{/}  ` +
+      `{${t.subtext}-fg}Collection:{/} {bold}{${t.put}-fg}[${this.collection.name}]{/}  ` +
       `{${t.subtext}-fg}Env:{/} {bold}{${t.options}-fg}[${envName}]{/}  ` +
       `{${t.subtext}-fg}Auth:{/} ${authStatus}  ` +
       `{right}{${t.subtext}-fg}Theme:{/} {${t.put}-fg}${t.name}{/} `
@@ -377,10 +381,9 @@ export class BruiApp {
       const indent = '  '.repeat(item.depth);
       if (item.type === 'folder') {
         const isExpanded = this.expandedFolders.has(item.folder.id);
-        const icon = isExpanded ? '📂' : '📁';
-        const arrow = isExpanded ? '▼' : '▶';
+        const marker = isExpanded ? 'v' : '>';
         const total = item.folder.requests.length + item.folder.folders.length;
-        items.push(`${indent}{bold}{${t.accent}-fg}${arrow} ${icon} ${item.folder.name}{/} {${t.subtext}-fg}(${total}){/}`);
+        items.push(`${indent}{bold}{${t.accent}-fg}${marker} [${item.folder.name}]{/} {${t.subtext}-fg}(${total}){/}`);
       } else {
         const req = item.request;
         let badgeColor = t.get;
@@ -425,8 +428,8 @@ export class BruiApp {
       { id: 'params', label: `Params (${req.params.length})` },
       { id: 'body', label: `Body (${req.bodyType})` },
       { id: 'auth', label: `Auth (${req.authType})` },
-      { id: 'pre-script', label: `Pre-Script${req.preRequestScript ? ' ●' : ''}` },
-      { id: 'post-script', label: `Post-Script${req.postResponseScript ? ' ●' : ''}` },
+      { id: 'pre-script', label: `Pre-Script${req.preRequestScript ? ' *' : ''}` },
+      { id: 'post-script', label: `Post-Script${req.postResponseScript ? ' *' : ''}` },
       { id: 'docs', label: `Docs` }
     ];
 
@@ -492,9 +495,9 @@ export class BruiApp {
 
       const tokenBadge = token
         ? (isExpired
-            ? `{${t.statusError}-fg}▲ EXPIRED{/}`
-            : `{${t.statusSuccess}-fg}● ACTIVE (${expSec}s remaining){/}`)
-        : `{${t.subtext}-fg}○ No token in environment{/}`;
+            ? `{${t.statusError}-fg}[EXPIRED]{/}`
+            : `{${t.statusSuccess}-fg}[ACTIVE (${expSec}s)]{/}`)
+        : `{${t.subtext}-fg}[NO TOKEN]{/}`;
 
       content = ` {bold}Auth Mode:{/}  ${modeButtons}\n\n`;
 
@@ -518,7 +521,7 @@ export class BruiApp {
         content += ` {bold}Token Status:{/}   ${tokenBadge}\n\n`;
       } else if (mode === 'basic') {
         content += ` {bold}{${t.accent}-fg}Username:{/} ${req.authBasicUser || '{#6c7086-fg}(empty){/}'}\n`;
-        content += ` {bold}{${t.accent}-fg}Password:{/} ${req.authBasicPassword ? '••••••••' : '{#6c7086-fg}(empty){/}'}\n\n`;
+        content += ` {bold}{${t.accent}-fg}Password:{/} ${req.authBasicPassword ? '********' : '{#6c7086-fg}(empty){/}'}\n\n`;
       } else if (mode === 'oauth2') {
         const o = req.authOAuth2 || { grantType: 'password', tokenUrl: '', clientId: '' };
         content += ` {bold}{${t.accent}-fg}Grant Type:{/}   {bold}{${t.options}-fg}[${o.grantType.toUpperCase()}]{/}\n`;
@@ -526,7 +529,7 @@ export class BruiApp {
         content += ` {bold}Client ID:{/}    ${o.clientId || '{#6c7086-fg}(not set){/}'}\n`;
         if (o.grantType === 'password') {
           content += ` {bold}Username:{/}     ${o.username || '{#6c7086-fg}(not set){/}'}\n`;
-          content += ` {bold}Password:{/}     ${o.password ? '••••••••' : '{#6c7086-fg}(not set){/}'}\n`;
+          content += ` {bold}Password:{/}     ${o.password ? '********' : '{#6c7086-fg}(not set){/}'}\n`;
         } else if (o.grantType === 'authorization_code') {
           content += ` {bold}Auth URL:{/}     ${o.authUrl || '{#6c7086-fg}(not set){/}'}\n`;
           content += ` {bold}Callback URL:{/} ${o.redirectUri || 'http://127.0.0.1:3000/callback'}\n`;
@@ -536,11 +539,11 @@ export class BruiApp {
         content += ` {bold}Token Status:{/} ${tokenBadge}\n\n`;
       }
 
-      content += `{bold}{${t.accent}-fg}─── Actions ─────────────────────────────────────────────────────────────{/}\n`;
-      content += ` {bold}{${t.get}-fg}[ ⚡ Click here or Press 'O' to GET ACCESS TOKEN ]{/}  \n` +
-                 ` {bold}{${t.put}-fg}[ ⚙ Press 'A' to Configure Auth Fields ]{/}  ` +
-                 `{bold}{${t.options}-fg}[ Press 'M' to Cycle Mode ]{/}  ` +
-                 `{bold}[ Press 'S' to Save ]{/}`;
+      content += `{bold}{${t.accent}-fg}--- Actions -------------------------------------------------------------{/}\n`;
+      content += ` {bold}{${t.get}-fg}[ GET ACCESS TOKEN (Press 'O' or Click) ]{/}  \n` +
+                 ` {bold}{${t.put}-fg}[ Configure Auth (Press 'A') ]{/}  ` +
+                 `{bold}{${t.options}-fg}[ Cycle Mode (Press 'M') ]{/}  ` +
+                 `{bold}[ Save (Press 'S') ]{/}`;
     } else if (this.activeRequestTab === 'pre-script') {
       content = req.preRequestScript || '{#6c7086-fg}No pre-request script.{/}';
     } else if (this.activeRequestTab === 'post-script') {
@@ -849,7 +852,7 @@ export class BruiApp {
       left: 1,
       right: 12,
       height: 2,
-      content: `{bold}{${t.accent}-fg}📂 Select a Bruno Collection{/} {${t.subtext}-fg}(Enter/Click to open, Esc/q to cancel){/}`,
+      content: `{bold}{${t.accent}-fg}Select a Bruno Collection{/} {${t.subtext}-fg}(Enter/Click to open, Esc/q to cancel){/}`,
       tags: true
     });
 
@@ -859,13 +862,8 @@ export class BruiApp {
       right: 1,
       width: 11,
       height: 1,
-      content: `{bold}{${t.delete}-fg}[ ✕ Close ]{/}`,
-      tags: true,
-      mouse: true,
-      style: {
-        bg: t.surface,
-        hover: { bg: t.surfaceHover }
-      }
+      content: `{bold}{${t.delete}-fg}[X Close]{/}`,
+      tags: true
     });
 
     const collList = blessed.list({
@@ -886,7 +884,7 @@ export class BruiApp {
       },
       items: discovered.map(c => {
         const isCurrent = c.path === this.collectionPath;
-        const star = isCurrent ? `{${t.get}-fg}● (current){/} ` : '  ';
+        const star = isCurrent ? `{${t.get}-fg}* (current){/} ` : '  ';
         return `${star}{bold}${c.name}{/} {${t.subtext}-fg}${c.path}{/}`;
       })
     });
@@ -1059,9 +1057,9 @@ export class BruiApp {
 
       const updated = jsonToBruV2(json);
       fs.writeFileSync(filePath, updated, 'utf8');
-      this.updateStatusBar(`✔ Saved auth configuration to ${path.basename(filePath)}!`);
+      this.updateStatusBar(`Saved auth configuration to ${path.basename(filePath)}!`);
     } catch (err: any) {
-      this.updateStatusBar(`✖ Save error: ${err.message}`);
+      this.updateStatusBar(`Save error: ${err.message}`);
     }
   }
 
@@ -1111,10 +1109,10 @@ export class BruiApp {
           await this.scriptRunner.runPostResponseScript(tokenReq, resp);
           this.updateHeader();
           this.updateRequestView();
-          this.updateStatusBar(`✔ Auth request completed: HTTP ${resp.status}`);
+          this.updateStatusBar(`Auth request completed: HTTP ${resp.status}`);
           return;
         } catch (err: any) {
-          this.updateStatusBar(`✖ Auth request error: ${err.message}`);
+          this.updateStatusBar(`Auth request error: ${err.message}`);
           return;
         }
       }
@@ -1133,9 +1131,9 @@ export class BruiApp {
       this.updateHeader();
       this.updateRequestView();
       const expStr = result.expiresIn ? ` (Expires in ${result.expiresIn}s)` : '';
-      this.updateStatusBar(`✔ OAuth2 success! Token saved: ${result.accessToken.slice(0, 15)}...${expStr}`);
+      this.updateStatusBar(`OAuth2 success! Token saved: ${result.accessToken.slice(0, 15)}...${expStr}`);
     } catch (err: any) {
-      this.updateStatusBar(`✖ OAuth2 error: ${err.message}`);
+      this.updateStatusBar(`OAuth2 error: ${err.message}`);
     }
   }
 }

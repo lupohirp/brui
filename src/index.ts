@@ -5,7 +5,7 @@ import { ALL_THEMES } from './themes';
 
 function showHelp() {
   console.log(`
-\x1b[1m\x1b[35m⚡ BRUI\x1b[0m - Fast, mouse-friendly TUI for Bruno API collections
+\x1b[1m\x1b[35mBRUI\x1b[0m - Fast, mouse-friendly TUI for Bruno API collections
 
 \x1b[1mUsage:\x1b[0m
   brui [collection-path] [options]

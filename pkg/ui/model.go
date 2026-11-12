@@ -1864,9 +1864,10 @@ func (m Model) renderHeader(width, height int) string {
 		envName = "None"
 	}
 
-	l1 := fmt.Sprintf(" %s  %s %s", dog1, accent.Render("BRUI"), subtext.Render("- Bruno Terminal Client (Go Native)"))
-	l2 := fmt.Sprintf(" %s  %s %s   %s %s", dog2, subtext.Render("Collection [C]:"), putStyle.Render("["+m.Coll.Name+"]"), subtext.Render("Env [E]:"), optStyle.Render("["+envName+"]"))
-	l3 := fmt.Sprintf(" %s  %s", dog3, hintStyle.Render("[↑/↓] Select   [Space] Send   [1-5] Tabs   [U] Edit URL   [E] Env   [S] Save   [q] Quit"))
+	innerW := width - 2
+	l1 := padAndPaint(fmt.Sprintf(" %s  %s %s", dog1, accent.Render("BRUI"), subtext.Render("- Bruno Terminal Client (Go Native)")), innerW, m.Theme.Fg, m.Theme.Bg)
+	l2 := padAndPaint(fmt.Sprintf(" %s  %s %s   %s %s", dog2, subtext.Render("Collection [C]:"), putStyle.Render("["+m.Coll.Name+"]"), subtext.Render("Env [E]:"), optStyle.Render("["+envName+"]")), innerW, m.Theme.Fg, m.Theme.Bg)
+	l3 := padAndPaint(fmt.Sprintf(" %s  %s", dog3, hintStyle.Render("[↑/↓] Select   [Space] Send   [1-5] Tabs   [U] Edit URL   [E] Env   [S] Save   [q] Quit")), innerW, m.Theme.Fg, m.Theme.Bg)
 
 	boxStyle := lipgloss.NewStyle().
 		Width(width - 2).
@@ -1907,7 +1908,7 @@ func (m Model) renderSidebar(width, height int) string {
 	for r := 0; r < innerH; r++ {
 		idx := offset + r
 		if idx >= len(m.VisibleItems) {
-			lines = append(lines, "")
+			lines = append(lines, padAndPaint("", innerW, m.Theme.Fg, m.Theme.Bg))
 			continue
 		}
 
@@ -1991,16 +1992,9 @@ func (m Model) renderSidebar(width, height int) string {
 		}
 
 		if isSelected {
-			selStyle := lipgloss.NewStyle().
-				Background(lipgloss.Color(m.Theme.Selection)).
-				Foreground(lipgloss.Color(m.Theme.SelectionFg)).
-				Bold(true)
-			lines = append(lines, selStyle.Render(padded))
+			lines = append(lines, paintLine(padded, m.Theme.SelectionFg, m.Theme.Selection))
 		} else {
-			normStyle := lipgloss.NewStyle().
-				Background(lipgloss.Color(m.Theme.Bg)).
-				Foreground(lipgloss.Color(m.Theme.Fg))
-			lines = append(lines, normStyle.Render(padded))
+			lines = append(lines, paintLine(padded, m.Theme.Fg, m.Theme.Bg))
 		}
 	}
 
@@ -2036,13 +2030,16 @@ func (m Model) renderRequestPane(width, height int) string {
 
 	if m.SelectedRequest == nil {
 		style := lipgloss.NewStyle().
-			Width(width).
+			Width(width - 2).
 			MaxWidth(width).
-			Height(height).
+			Height(height - 2).
 			MaxHeight(height).
 			BorderStyle(lipgloss.RoundedBorder()).
-			BorderForeground(lipgloss.Color(m.Theme.Border))
-		return style.Render(" No request selected")
+			BorderForeground(lipgloss.Color(m.Theme.Border)).
+			BorderBackground(lipgloss.Color(m.Theme.Bg)).
+			Background(lipgloss.Color(m.Theme.Bg)).
+			Foreground(lipgloss.Color(m.Theme.Fg))
+		return style.Render(padAndPaint(" No request selected", innerW, m.Theme.Fg, m.Theme.Bg))
 	}
 
 	req := m.SelectedRequest
@@ -2071,7 +2068,7 @@ func (m Model) renderRequestPane(width, height int) string {
 		urlDisplay = highlightVariables(req.URL, m.Theme)
 	}
 
-	line1 := fmt.Sprintf(" %s  %s", badge, urlDisplay)
+	line1 := padAndPaint(fmt.Sprintf(" %s  %s", badge, urlDisplay), innerW, m.Theme.Fg, m.Theme.Bg)
 
 	tabs := []string{"Headers", "Params", "Body", "Auth", "Docs"}
 	var tabStrs []string
@@ -2083,7 +2080,7 @@ func (m Model) renderRequestPane(width, height int) string {
 			tabStrs = append(tabStrs, lipgloss.NewStyle().Foreground(lipgloss.Color(m.Theme.Subtext)).Render(fmt.Sprintf("  %d:%s  ", i+1, t)))
 		}
 	}
-	line2 := " " + strings.Join(tabStrs, " ")
+	line2 := padAndPaint(" "+strings.Join(tabStrs, " "), innerW, m.Theme.Fg, m.Theme.Bg)
 
 	var contentLines []string
 	switch m.ActiveTab {
@@ -2146,7 +2143,7 @@ func (m Model) renderRequestPane(width, height int) string {
 		if trailingLen < 0 {
 			trailingLen = 0
 		}
-		editSep := editBanner + lipgloss.NewStyle().Foreground(lipgloss.Color(m.Theme.Border)).Render(strings.Repeat("─", trailingLen))
+		editSep := padAndPaint(editBanner+lipgloss.NewStyle().Foreground(lipgloss.Color(m.Theme.Border)).Render(strings.Repeat("─", trailingLen)), innerW, m.Theme.Fg, m.Theme.Bg)
 		finalRows = append(finalRows, line1, line2, editSep)
 
 		rawLines := strings.Split(m.ContentEditText, "\n")
@@ -2196,22 +2193,12 @@ func (m Model) renderRequestPane(width, height int) string {
 						Bold(true).
 						Render(cChar)
 					renderedLine := " " + cBefore + curBlock + cAfter
-					truncated := ansi.Truncate(renderedLine, innerW, "")
-					visW := ansi.StringWidth(truncated)
-					if visW < innerW {
-						truncated += strings.Repeat(" ", innerW-visW)
-					}
-					finalRows = append(finalRows, truncated)
+					finalRows = append(finalRows, padAndPaint(renderedLine, innerW, m.Theme.Fg, m.Theme.Bg))
 				} else {
-					truncated := ansi.Truncate(" "+l, innerW, "")
-					visW := ansi.StringWidth(truncated)
-					if visW < innerW {
-						truncated += strings.Repeat(" ", innerW-visW)
-					}
-					finalRows = append(finalRows, truncated)
+					finalRows = append(finalRows, padAndPaint(" "+l, innerW, m.Theme.Fg, m.Theme.Bg))
 				}
 			} else {
-				finalRows = append(finalRows, strings.Repeat(" ", innerW))
+				finalRows = append(finalRows, padAndPaint("", innerW, m.Theme.Fg, m.Theme.Bg))
 			}
 		}
 	} else {
@@ -2221,7 +2208,7 @@ func (m Model) renderRequestPane(width, height int) string {
 		if trailingLen < 0 {
 			trailingLen = 0
 		}
-		normalSep := hint + lipgloss.NewStyle().Foreground(lipgloss.Color(m.Theme.Border)).Render(strings.Repeat("─", trailingLen))
+		normalSep := padAndPaint(hint+lipgloss.NewStyle().Foreground(lipgloss.Color(m.Theme.Border)).Render(strings.Repeat("─", trailingLen)), innerW, m.Theme.Fg, m.Theme.Bg)
 		finalRows = append(finalRows, line1, line2, normalSep)
 
 		maxScroll := len(contentLines) - bodyCapacity
@@ -2238,14 +2225,9 @@ func (m Model) renderRequestPane(width, height int) string {
 		for r := 0; r < bodyCapacity; r++ {
 			idx := m.ReqScroll + r
 			if idx < len(contentLines) {
-				truncated := ansi.Truncate(contentLines[idx], innerW, "")
-				visW := ansi.StringWidth(truncated)
-				if visW < innerW {
-					truncated += strings.Repeat(" ", innerW-visW)
-				}
-				finalRows = append(finalRows, truncated)
+				finalRows = append(finalRows, padAndPaint(contentLines[idx], innerW, m.Theme.Fg, m.Theme.Bg))
 			} else {
-				finalRows = append(finalRows, strings.Repeat(" ", innerW))
+				finalRows = append(finalRows, padAndPaint("", innerW, m.Theme.Fg, m.Theme.Bg))
 			}
 		}
 	}
@@ -2294,7 +2276,8 @@ func (m Model) renderResponsePane(width, height int) string {
 		line1 = fmt.Sprintf(" %s   %s   %s   %s   %s", stBadge, sub.Render(fmt.Sprintf("Time: %dms", r.DurationMs)), sub.Render(fmt.Sprintf("Size: %dB", r.SizeBytes)), tabB, tabH)
 	}
 
-	sepLine := lipgloss.NewStyle().Foreground(lipgloss.Color(m.Theme.Border)).Render(strings.Repeat("─", innerW))
+	line1 = padAndPaint(line1, innerW, m.Theme.Fg, m.Theme.Bg)
+	sepLine := padAndPaint(lipgloss.NewStyle().Foreground(lipgloss.Color(m.Theme.Border)).Render(strings.Repeat("─", innerW)), innerW, m.Theme.Fg, m.Theme.Bg)
 
 	var contentLines []string
 	if m.LastResponse != nil {
@@ -2328,14 +2311,9 @@ func (m Model) renderResponsePane(width, height int) string {
 	for r := 0; r < bodyCapacity; r++ {
 		idx := offset + r
 		if idx < len(contentLines) {
-			truncated := ansi.Truncate(contentLines[idx], innerW, "")
-			visW := ansi.StringWidth(truncated)
-			if visW < innerW {
-				truncated += strings.Repeat(" ", innerW-visW)
-			}
-			finalRows = append(finalRows, truncated)
+			finalRows = append(finalRows, padAndPaint(contentLines[idx], innerW, m.Theme.Fg, m.Theme.Bg))
 		} else {
-			finalRows = append(finalRows, strings.Repeat(" ", innerW))
+			finalRows = append(finalRows, padAndPaint("", innerW, m.Theme.Fg, m.Theme.Bg))
 		}
 	}
 
@@ -2353,13 +2331,6 @@ func (m Model) renderResponsePane(width, height int) string {
 }
 
 func (m Model) renderStatusBar(width int) string {
-	barStyle := lipgloss.NewStyle().
-		Width(width).
-		MaxWidth(width).
-		Height(1).
-		MaxHeight(1).
-		Background(lipgloss.Color(m.Theme.Surface))
-
 	if len(m.ACCandidates) > 0 {
 		t := m.Theme
 		var cands []string
@@ -2383,7 +2354,7 @@ func (m Model) renderStatusBar(width int) string {
 		}
 		acTitle := lipgloss.NewStyle().Foreground(lipgloss.Color(t.Patch)).Bold(true).Render(" [Autocomplete] ")
 		hints := lipgloss.NewStyle().Foreground(lipgloss.Color(t.Subtext)).Render(" │ [Tab/Enter] Accept  [←/→] Select  [Esc] Cancel")
-		return barStyle.Render(acTitle + strings.Join(cands, "") + hints)
+		return padAndPaint(acTitle+strings.Join(cands, "")+hints, width, m.Theme.Fg, m.Theme.Surface)
 	}
 
 	shortcuts := lipgloss.NewStyle().
@@ -2395,13 +2366,8 @@ func (m Model) renderStatusBar(width int) string {
 		Bold(true).
 		Render(m.StatusMsg)
 
-	barText := fmt.Sprintf(" %s  │  %s", shortcuts, status)
-	w := ansi.StringWidth(barText)
-	if w < width {
-		barText += strings.Repeat(" ", width-w)
-	}
-
-	return barStyle.Render(barText)
+	barText := fmt.Sprintf("%s  │  %s", shortcuts, status)
+	return padAndPaint(barText, width, m.Theme.Fg, m.Theme.Surface)
 }
 
 func highlightVariables(text string, t theme.Theme) string {
@@ -2412,6 +2378,39 @@ func highlightVariables(text string, t theme.Theme) string {
 	return varRegex.ReplaceAllStringFunc(text, func(m string) string {
 		return peach.Render(m)
 	})
+}
+
+func paintLine(s string, fg, bg string) string {
+	if bg == "" && fg == "" {
+		return s
+	}
+	st := lipgloss.NewStyle()
+	if fg != "" {
+		st = st.Foreground(lipgloss.Color(fg))
+	}
+	if bg != "" {
+		st = st.Background(lipgloss.Color(bg))
+	}
+	sample := st.Render("\x00")
+	idx := strings.IndexByte(sample, '\x00')
+	if idx <= 0 {
+		return s
+	}
+	seq := sample[:idx]
+	replaced := strings.ReplaceAll(s, "\x1b[0m", "\x1b[0m"+seq)
+	return seq + replaced + "\x1b[0m"
+}
+
+func padAndPaint(s string, w int, fg, bg string) string {
+	if w <= 0 {
+		return ""
+	}
+	truncated := ansi.Truncate(s, w, "")
+	visW := ansi.StringWidth(truncated)
+	if visW < w {
+		truncated += strings.Repeat(" ", w-visW)
+	}
+	return paintLine(truncated, fg, bg)
 }
 
 func (m Model) renderEnvironmentModal() string {

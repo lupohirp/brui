@@ -227,7 +227,7 @@ export class BruiApp {
       top: 5,
       left: '32%',
       width: '68%',
-      bottom: '45%',
+      height: '55%-5',
       border: { type: 'line' },
       tags: true
     });
@@ -562,7 +562,10 @@ export class BruiApp {
           const before = escapeTags(line.slice(0, curCol));
           const atChar = curCol < line.length ? escapeTags(line[curCol]) : ' ';
           const after = curCol < line.length ? escapeTags(line.slice(curCol + 1)) : '';
-          lineBody = `${before}{inverse}${atChar}{/inverse}${after}`;
+          const emptyHint = line.length === 0 && lines.length === 1
+            ? `  {${t.subtext}-fg}(type ${escapeTags(placeholder.replace(/\n/g, ' '))}){/}`
+            : '';
+          lineBody = `${before}{inverse}${atChar}{/inverse}${after}${emptyHint}`;
         } else {
           lineBody = Interpolator.highlightVariables(line, this.collection, t.accent, t.delete);
         }

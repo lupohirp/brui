@@ -185,13 +185,13 @@ export class BruiApp {
   private buildLayout() {
     const theme = this.getTheme();
 
-    // 1. Top Header (Height 4 -> 2 clean inner lines: Title on line 1, Collection & Env on line 2)
+    // 1. Top Header (Height 5 -> 3 inner lines for 6x9 pixel-art Bruno dog + 2 text lines)
     this.headerBox = blessed.box({
       parent: this.screen,
       top: 0,
       left: 0,
       width: '100%',
-      height: 4,
+      height: 5,
       tags: true,
       border: { type: 'line' },
       mouse: true
@@ -200,7 +200,7 @@ export class BruiApp {
     // 2. Left Sidebar (Tree view with folders & requests)
     this.sidebarList = blessed.list({
       parent: this.screen,
-      top: 4,
+      top: 5,
       left: 0,
       width: '32%',
       bottom: 2,
@@ -220,7 +220,7 @@ export class BruiApp {
     // 3. Request Pane (Top Right)
     this.requestPane = blessed.box({
       parent: this.screen,
-      top: 4,
+      top: 5,
       left: '32%',
       width: '68%',
       bottom: '48%',
@@ -385,11 +385,23 @@ export class BruiApp {
     const t = this.getTheme();
     const envName = this.collection.activeEnvironment || 'None';
 
-    const line1 = ` {bold}{#f4aa42-fg}BRUI{/} {${t.subtext}-fg}- Bruno Terminal Client{/}`;
-    const line2 = ` {${t.subtext}-fg}Collection [C]:{/} {bold}{${t.put}-fg}[${this.collection.name}]{/}   ` +
-                  `{${t.subtext}-fg}Env [E]:{/} {bold}{${t.options}-fg}[${envName}]{/}`;
+    // 6x9 half-block pixel-art sprite of Bruno the Golden Retriever (3 rows x 9 cols):
+    // E = floppy ears (#c97a2b), Y = gold fur (#f4aa42), K = eyes/nose (#11111b), R = tongue (#ea5a47)
+    const E = '#c97a2b';
+    const Y = '#f4aa42';
+    const K = '#11111b';
+    const R = '#ea5a47';
 
-    this.headerBox.setContent(`${line1}\n${line2}`);
+    const dog1 = `{${E}-fg}▄█{/}{${Y}-fg}█████{/}{${E}-fg}█▄{/}`;
+    const dog2 = `{${E}-fg}▀{/}{${E}-fg}{${Y}-bg}▀{/}{${K}-fg}{${Y}-bg}▀{/}{${t.bg}-bg}{${Y}-fg}█{/}{${Y}-fg}{${K}-bg}▀{/}{${t.bg}-bg}{${Y}-fg}█{/}{${K}-fg}{${Y}-bg}▀{/}{${E}-fg}{${Y}-bg}▀{/}{${t.bg}-bg}{${E}-fg}▀{/}`;
+    const dog3 = `  {${Y}-fg}▀▀{/}{${R}-fg}█{/}{${Y}-fg}▀▀{/}  `;
+
+    const line1 = ` ${dog1}  {bold}{#f4aa42-fg}BRUI{/} {${t.subtext}-fg}- Bruno Terminal Client{/}`;
+    const line2 = ` ${dog2}  {${t.subtext}-fg}Collection [C]:{/} {bold}{${t.put}-fg}[${this.collection.name}]{/}   ` +
+                  `{${t.subtext}-fg}Env [E]:{/} {bold}{${t.options}-fg}[${envName}]{/}`;
+    const line3 = ` ${dog3}`;
+
+    this.headerBox.setContent(`${line1}\n${line2}\n${line3}`);
   }
 
   private renderSidebar() {
@@ -815,8 +827,8 @@ export class BruiApp {
       const relY = data.y - (pos.yi + 1);
 
       if (relY === 1) {
-        // Line 2: " Collection [C]: [name]   Env [E]: [env]"
-        const collEnd = 1 + 16 + 1 + this.collection.name.length + 1;
+        // Line 2: " <9-col-dog>  Collection [C]: [name]   Env [E]: [env]"
+        const collEnd = 12 + 16 + 1 + this.collection.name.length + 1;
         const envStart = collEnd + 3;
         if (relX >= envStart) {
           this.openEnvironmentModal();

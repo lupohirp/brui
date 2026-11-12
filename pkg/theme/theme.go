@@ -27,10 +27,10 @@ type Theme struct {
 // Catppuccin Mocha (Default)
 var Mocha = Theme{
 	Name:        "Catppuccin Mocha",
-	Bg:          "", // Use terminal native default
+	Bg:          "#1e1e2e",
 	Fg:          "#cdd6f4",
 	Surface:     "#313244",
-	ModalBg:     "#1e1e2e",
+	ModalBg:     "#181825",
 	Border:      "#45475a",
 	BorderFocus: "#cba6f7",
 	Selection:   "#45475a",
@@ -50,10 +50,10 @@ var Mocha = Theme{
 // Catppuccin Macchiato
 var Macchiato = Theme{
 	Name:        "Catppuccin Macchiato",
-	Bg:          "",
+	Bg:          "#24273a",
 	Fg:          "#cad3f5",
 	Surface:     "#363a4f",
-	ModalBg:     "#24273a",
+	ModalBg:     "#1e2030",
 	Border:      "#494d64",
 	BorderFocus: "#c6a0f6",
 	Selection:   "#494d64",
@@ -73,10 +73,10 @@ var Macchiato = Theme{
 // Catppuccin Frappé
 var Frappe = Theme{
 	Name:        "Catppuccin Frappé",
-	Bg:          "",
+	Bg:          "#303446",
 	Fg:          "#c6d0f5",
 	Surface:     "#414559",
-	ModalBg:     "#303446",
+	ModalBg:     "#292c3c",
 	Border:      "#51576d",
 	BorderFocus: "#ca9ee6",
 	Selection:   "#51576d",
@@ -116,7 +116,53 @@ var Latte = Theme{
 	Error:       "#d20f39",
 }
 
-var AllThemes = []Theme{Mocha, Macchiato, Frappe, Latte}
+// Tokyo Night
+var TokyoNight = Theme{
+	Name:        "Tokyo Night",
+	Bg:          "#1a1b26",
+	Fg:          "#c0caf5",
+	Surface:     "#292e42",
+	ModalBg:     "#16161e",
+	Border:      "#414868",
+	BorderFocus: "#bb9af7",
+	Selection:   "#33467c",
+	SelectionFg: "#c0caf5",
+	Accent:      "#bb9af7",
+	Subtext:     "#9aa5ce",
+	Get:         "#9ece6a",
+	Post:        "#ff9e64",
+	Put:         "#7aa2f7",
+	Patch:       "#7dcfff",
+	Delete:      "#f7768e",
+	Success:     "#9ece6a",
+	Warn:        "#e0af68",
+	Error:       "#f7768e",
+}
+
+// Dracula
+var Dracula = Theme{
+	Name:        "Dracula",
+	Bg:          "#282a36",
+	Fg:          "#f8f8f2",
+	Surface:     "#44475a",
+	ModalBg:     "#21222c",
+	Border:      "#6272a4",
+	BorderFocus: "#bd93f9",
+	Selection:   "#44475a",
+	SelectionFg: "#f8f8f2",
+	Accent:      "#bd93f9",
+	Subtext:     "#bfbfbf",
+	Get:         "#50fa7b",
+	Post:        "#ffb86c",
+	Put:         "#8be9fd",
+	Patch:       "#8be9fd",
+	Delete:      "#ff5555",
+	Success:     "#50fa7b",
+	Warn:        "#ffb86c",
+	Error:       "#ff5555",
+}
+
+var AllThemes = []Theme{Mocha, Macchiato, Frappe, Latte, TokyoNight, Dracula}
 
 
 func MethodColor(method string, t Theme) lipgloss.Color {

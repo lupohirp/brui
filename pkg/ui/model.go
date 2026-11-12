@@ -277,12 +277,22 @@ func (m *Model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 
 		// Over Request Pane
 		if msg.X >= sidebarW && msg.Y >= 5 && msg.Y < 5+reqH {
-			if msg.Button == tea.MouseButtonWheelUp {
-				if m.ReqScroll > 0 {
-					m.ReqScroll--
+			if m.IsEditingContent {
+				if msg.Button == tea.MouseButtonWheelUp {
+					if m.ContentScroll > 0 {
+						m.ContentScroll--
+					}
+				} else if msg.Button == tea.MouseButtonWheelDown {
+					m.ContentScroll++
 				}
-			} else if msg.Button == tea.MouseButtonWheelDown {
-				m.ReqScroll++
+			} else {
+				if msg.Button == tea.MouseButtonWheelUp {
+					if m.ReqScroll > 0 {
+						m.ReqScroll--
+					}
+				} else if msg.Button == tea.MouseButtonWheelDown {
+					m.ReqScroll++
+				}
 			}
 			return *m, nil
 		}
@@ -351,13 +361,18 @@ func (m *Model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 
 			// Row 6: Method badge + URL
 			if msg.Y == 6 && m.SelectedRequest != nil {
-				methodBadgeLen := len(m.SelectedRequest.Method) + 5
-				if relX <= methodBadgeLen {
+				badgeW := len(m.SelectedRequest.Method) + 4 // e.g. "[ GET ]" -> 7
+				if relX >= 1 && relX <= 1+badgeW {
 					m.cycleMethod()
-				} else {
+					m.IsEditingURL = false
+					m.ACCandidates = nil
+					return *m, nil
+				}
+				urlStartCol := 1 + badgeW + 2 // " [ GET ]  " -> 1 + 7 + 2 = 10
+				if relX >= urlStartCol {
 					m.IsEditingURL = true
 					m.URLEditText = m.SelectedRequest.URL
-					clickCol := relX - (methodBadgeLen + 2)
+					clickCol := relX - urlStartCol
 					if clickCol < 0 {
 						clickCol = 0
 					}
@@ -366,6 +381,7 @@ func (m *Model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 					}
 					m.URLCursor = clickCol
 					m.updateAutocomplete()
+					m.StatusMsg = "Editing URL. [Enter/Esc] Done  [Ctrl+S] Save"
 				}
 				return *m, nil
 			}
@@ -374,6 +390,7 @@ func (m *Model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 			if msg.Y == 7 {
 				m.IsEditingURL = false
 				m.ACCandidates = nil
+				m.ReqScroll = 0
 				if relX < 15 {
 					m.ActiveTab = "headers"
 				} else if relX < 28 {
@@ -393,7 +410,35 @@ func (m *Model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 
 			// Rows >= 8: Content area click to edit
 			if msg.Y >= 8 && m.SelectedRequest != nil {
-				m.startEditingContent()
+				m.IsEditingURL = false
+				m.ACCandidates = nil
+				rowInContent := msg.Y - 9
+				if rowInContent < 0 {
+					rowInContent = 0
+				}
+				if !m.IsEditingContent {
+					m.startEditingContent()
+				}
+				targetLineIdx := m.ReqScroll + rowInContent
+				lines := strings.Split(m.ContentEditText, "\n")
+				if targetLineIdx >= len(lines) {
+					targetLineIdx = len(lines) - 1
+				}
+				if targetLineIdx < 0 {
+					targetLineIdx = 0
+				}
+				offset := 0
+				for i := 0; i < targetLineIdx; i++ {
+					offset += len(lines[i]) + 1
+				}
+				clickCol := relX - 1
+				if clickCol < 0 {
+					clickCol = 0
+				}
+				if targetLineIdx < len(lines) && clickCol > len(lines[targetLineIdx]) {
+					clickCol = len(lines[targetLineIdx])
+				}
+				m.ContentCursor = offset + clickCol
 				return *m, nil
 			}
 
@@ -578,7 +623,23 @@ func (m *Model) startEditingContent() {
 				lines = append(lines, fmt.Sprintf("# %s: %s", h.Name, h.Value))
 			}
 		}
+		reqEndCursor := len(strings.Join(lines, "\n"))
+		if m.Coll != nil && len(m.Coll.CollectionHeaders) > 0 {
+			lines = append(lines, "")
+			lines = append(lines, "# --- Inherited from collection.bru ---")
+			for _, ch := range m.Coll.CollectionHeaders {
+				if ch.Enabled {
+					lines = append(lines, fmt.Sprintf("%s: %s", ch.Name, ch.Value))
+				} else {
+					lines = append(lines, fmt.Sprintf("# %s: %s", ch.Name, ch.Value))
+				}
+			}
+		}
 		m.ContentEditText = strings.Join(lines, "\n")
+		m.ContentCursor = reqEndCursor
+		m.ContentScroll = 0
+		m.StatusMsg = fmt.Sprintf("Editing %s. [Esc] Done  [Ctrl+S] Save  [Enter] Newline", m.ActiveTab)
+		return
 	case "params":
 		var lines []string
 		for _, p := range req.Params {
@@ -610,31 +671,49 @@ func (m *Model) saveTabContent() {
 	req := m.SelectedRequest
 	switch m.ActiveTab {
 	case "headers":
-		var newHeaders []bru.BruHeader
+		var newReqHeaders []bru.BruHeader
+		var newCollHeaders []bru.BruHeader
+		inCollSection := false
+		hasCollSection := false
+
 		lines := strings.Split(m.ContentEditText, "\n")
 		for _, l := range lines {
 			trimmed := strings.TrimSpace(l)
 			if trimmed == "" {
 				continue
 			}
+			if strings.Contains(strings.ToLower(trimmed), "inherited from collection.bru") {
+				inCollSection = true
+				hasCollSection = true
+				continue
+			}
 			enabled := true
-			if strings.HasPrefix(trimmed, "#") {
+			if strings.HasPrefix(trimmed, "#") || strings.HasPrefix(trimmed, "~") {
 				enabled = false
-				trimmed = strings.TrimSpace(strings.TrimPrefix(trimmed, "#"))
+				trimmed = strings.TrimSpace(strings.TrimPrefix(strings.TrimPrefix(trimmed, "#"), "~"))
 			}
 			idx := strings.Index(trimmed, ":")
 			if idx > 0 {
 				name := strings.TrimSpace(trimmed[:idx])
 				val := strings.TrimSpace(trimmed[idx+1:])
-				newHeaders = append(newHeaders, bru.BruHeader{
+				hdr := bru.BruHeader{
 					Name:    name,
 					Value:   val,
 					Enabled: enabled,
-				})
+				}
+				if inCollSection {
+					newCollHeaders = append(newCollHeaders, hdr)
+				} else {
+					newReqHeaders = append(newReqHeaders, hdr)
+				}
 			}
 		}
-		req.Headers = newHeaders
+		req.Headers = newReqHeaders
 		m.ModifiedRequests[req.ID] = true
+		if hasCollSection && m.Coll != nil {
+			m.Coll.CollectionHeaders = newCollHeaders
+			_ = m.saveCollectionBru()
+		}
 
 	case "params":
 		var newParams []bru.BruParam
@@ -1577,9 +1656,19 @@ func (m *Model) cycleTheme() {
 }
 
 
+func (m *Model) saveCollectionBru() error {
+	if m.Coll == nil || m.Coll.Path == "" {
+		return nil
+	}
+	collBruPath := filepath.Join(m.Coll.Path, "collection.bru")
+	raw := bru.SerializeCollectionBru(m.Coll)
+	return os.WriteFile(collBruPath, []byte(raw), 0644)
+}
+
 func (m *Model) saveCurrentRequest() error {
+	_ = m.saveCollectionBru()
 	if m.SelectedRequest == nil || m.SelectedRequest.FilePath == "" {
-		m.StatusMsg = "No request selected to save"
+		m.StatusMsg = "Collection saved"
 		return nil
 	}
 	raw := bru.SerializeRequest(m.SelectedRequest)
@@ -1589,7 +1678,7 @@ func (m *Model) saveCurrentRequest() error {
 		return err
 	}
 	delete(m.ModifiedRequests, m.SelectedRequest.ID)
-	m.StatusMsg = fmt.Sprintf("Saved: %s", filepath.Base(m.SelectedRequest.FilePath))
+	m.StatusMsg = fmt.Sprintf("Saved: %s & collection.bru", filepath.Base(m.SelectedRequest.FilePath))
 	return nil
 }
 
@@ -1785,7 +1874,9 @@ func (m Model) renderHeader(width, height int) string {
 		Height(height - 2).
 		MaxHeight(height).
 		BorderStyle(lipgloss.RoundedBorder()).
-		BorderForeground(lipgloss.Color(m.Theme.Border))
+		BorderForeground(lipgloss.Color(m.Theme.Border)).
+		BorderBackground(lipgloss.Color(m.Theme.Bg)).
+		Background(lipgloss.Color(m.Theme.Bg))
 
 	return boxStyle.Render(strings.Join([]string{l1, l2, l3}, "\n"))
 }
@@ -1907,6 +1998,7 @@ func (m Model) renderSidebar(width, height int) string {
 			lines = append(lines, selStyle.Render(padded))
 		} else {
 			normStyle := lipgloss.NewStyle().
+				Background(lipgloss.Color(m.Theme.Bg)).
 				Foreground(lipgloss.Color(m.Theme.Fg))
 			lines = append(lines, normStyle.Render(padded))
 		}
@@ -1918,7 +2010,9 @@ func (m Model) renderSidebar(width, height int) string {
 		Height(height - 2).
 		MaxHeight(height).
 		BorderStyle(lipgloss.RoundedBorder()).
-		BorderForeground(lipgloss.Color(m.Theme.BorderFocus))
+		BorderForeground(lipgloss.Color(m.Theme.BorderFocus)).
+		BorderBackground(lipgloss.Color(m.Theme.Bg)).
+		Background(lipgloss.Color(m.Theme.Bg))
 
 	return boxStyle.Render(strings.Join(lines, "\n"))
 }
@@ -1999,7 +2093,10 @@ func (m Model) renderRequestPane(width, height int) string {
 		}
 		if len(m.Coll.CollectionHeaders) > 0 {
 			sub := lipgloss.NewStyle().Foreground(lipgloss.Color(m.Theme.Subtext))
-			contentLines = append(contentLines, sub.Render(fmt.Sprintf(" --- Inherited from collection.bru (%d) ---", len(m.Coll.CollectionHeaders))))
+			acc := lipgloss.NewStyle().Foreground(lipgloss.Color(m.Theme.Accent)).Bold(true)
+			sep := fmt.Sprintf(" --- Inherited from collection.bru (%d) ---", len(m.Coll.CollectionHeaders))
+			hint := " [Click or 'i' to edit]"
+			contentLines = append(contentLines, acc.Render(sep)+sub.Render(hint))
 			for _, ch := range m.Coll.CollectionHeaders {
 				contentLines = append(contentLines, sub.Render(fmt.Sprintf(" %s: %s", ch.Name, ch.Value)))
 			}
@@ -2099,12 +2196,22 @@ func (m Model) renderRequestPane(width, height int) string {
 						Bold(true).
 						Render(cChar)
 					renderedLine := " " + cBefore + curBlock + cAfter
-					finalRows = append(finalRows, ansi.Truncate(renderedLine, innerW, ""))
+					truncated := ansi.Truncate(renderedLine, innerW, "")
+					visW := ansi.StringWidth(truncated)
+					if visW < innerW {
+						truncated += strings.Repeat(" ", innerW-visW)
+					}
+					finalRows = append(finalRows, truncated)
 				} else {
-					finalRows = append(finalRows, ansi.Truncate(" "+l, innerW, ""))
+					truncated := ansi.Truncate(" "+l, innerW, "")
+					visW := ansi.StringWidth(truncated)
+					if visW < innerW {
+						truncated += strings.Repeat(" ", innerW-visW)
+					}
+					finalRows = append(finalRows, truncated)
 				}
 			} else {
-				finalRows = append(finalRows, "")
+				finalRows = append(finalRows, strings.Repeat(" ", innerW))
 			}
 		}
 	} else {
@@ -2116,11 +2223,29 @@ func (m Model) renderRequestPane(width, height int) string {
 		}
 		normalSep := hint + lipgloss.NewStyle().Foreground(lipgloss.Color(m.Theme.Border)).Render(strings.Repeat("─", trailingLen))
 		finalRows = append(finalRows, line1, line2, normalSep)
+
+		maxScroll := len(contentLines) - bodyCapacity
+		if maxScroll < 0 {
+			maxScroll = 0
+		}
+		if m.ReqScroll > maxScroll {
+			m.ReqScroll = maxScroll
+		}
+		if m.ReqScroll < 0 {
+			m.ReqScroll = 0
+		}
+
 		for r := 0; r < bodyCapacity; r++ {
-			if r < len(contentLines) {
-				finalRows = append(finalRows, contentLines[r])
+			idx := m.ReqScroll + r
+			if idx < len(contentLines) {
+				truncated := ansi.Truncate(contentLines[idx], innerW, "")
+				visW := ansi.StringWidth(truncated)
+				if visW < innerW {
+					truncated += strings.Repeat(" ", innerW-visW)
+				}
+				finalRows = append(finalRows, truncated)
 			} else {
-				finalRows = append(finalRows, "")
+				finalRows = append(finalRows, strings.Repeat(" ", innerW))
 			}
 		}
 	}
@@ -2135,7 +2260,9 @@ func (m Model) renderRequestPane(width, height int) string {
 		Height(height - 2).
 		MaxHeight(height).
 		BorderStyle(lipgloss.RoundedBorder()).
-		BorderForeground(lipgloss.Color(borderColor))
+		BorderForeground(lipgloss.Color(borderColor)).
+		BorderBackground(lipgloss.Color(m.Theme.Bg)).
+		Background(lipgloss.Color(m.Theme.Bg))
 
 	return boxStyle.Render(strings.Join(finalRows, "\n"))
 }
@@ -2201,9 +2328,14 @@ func (m Model) renderResponsePane(width, height int) string {
 	for r := 0; r < bodyCapacity; r++ {
 		idx := offset + r
 		if idx < len(contentLines) {
-			finalRows = append(finalRows, contentLines[idx])
+			truncated := ansi.Truncate(contentLines[idx], innerW, "")
+			visW := ansi.StringWidth(truncated)
+			if visW < innerW {
+				truncated += strings.Repeat(" ", innerW-visW)
+			}
+			finalRows = append(finalRows, truncated)
 		} else {
-			finalRows = append(finalRows, "")
+			finalRows = append(finalRows, strings.Repeat(" ", innerW))
 		}
 	}
 
@@ -2213,7 +2345,9 @@ func (m Model) renderResponsePane(width, height int) string {
 		Height(height - 2).
 		MaxHeight(height).
 		BorderStyle(lipgloss.RoundedBorder()).
-		BorderForeground(lipgloss.Color(m.Theme.Border))
+		BorderForeground(lipgloss.Color(m.Theme.Border)).
+		BorderBackground(lipgloss.Color(m.Theme.Bg)).
+		Background(lipgloss.Color(m.Theme.Bg))
 
 	return boxStyle.Render(strings.Join(finalRows, "\n"))
 }

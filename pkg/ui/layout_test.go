@@ -760,11 +760,25 @@ func TestThemeCycling(t *testing.T) {
 		t.Errorf("Expected Latte, got %s", m.Theme.Name)
 	}
 
-	// Check modal in Latte theme uses Latte ModalBg
+	// Press 't' again -> Tokyo Night
+	newM, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'t'}})
+	m = newM.(Model)
+	if m.Theme.Name != "Tokyo Night" {
+		t.Errorf("Expected Tokyo Night, got %s", m.Theme.Name)
+	}
+
+	// Press 't' again -> Dracula
+	newM, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'t'}})
+	m = newM.(Model)
+	if m.Theme.Name != "Dracula" {
+		t.Errorf("Expected Dracula, got %s", m.Theme.Name)
+	}
+
+	// Check modal in Dracula theme
 	m.IsEnvModalOpen = true
 	modalView := m.View()
 	if !strings.Contains(modalView, "ENVIRONMENT & VARIABLES MANAGER") {
-		t.Errorf("Expected modal title in Latte theme")
+		t.Errorf("Expected modal title in Dracula theme")
 	}
 
 	// Click on [T] Theme in status bar (X: 72, Y: 29) -> cycles back to Mocha
@@ -779,6 +793,143 @@ func TestThemeCycling(t *testing.T) {
 	m = newM.(Model)
 	if m.Theme.Name != "Catppuccin Mocha" {
 		t.Errorf("Expected cycle back to Mocha via mouse click, got %s", m.Theme.Name)
+	}
+}
+
+func TestInheritedCollectionHeadersEditing(t *testing.T) {
+	tmpDir := t.TempDir()
+	reqFile := tmpDir + "/test_req.bru"
+	collFile := tmpDir + "/collection.bru"
+
+	req := &bru.BrunoRequest{
+		ID:       "req1",
+		Name:     "Test Request",
+		Method:   bru.MethodPost,
+		URL:      "https://example.com/api/test",
+		FilePath: reqFile,
+		Headers: []bru.BruHeader{
+			{Name: "Content-Type", Value: "application/json", Enabled: true},
+		},
+	}
+	coll := &bru.BrunoCollection{
+		Name: "TestColl",
+		Path: tmpDir,
+		CollectionHeaders: []bru.BruHeader{
+			{Name: "Accept-Encoding", Value: "gzip,deflate", Enabled: true},
+			{Name: "sourceSystem", Value: "CBE", Enabled: true},
+		},
+		Requests: []*bru.BrunoRequest{req},
+	}
+
+	m := NewModel(coll)
+	m.Width = 100
+	m.Height = 30
+	m.ActiveTab = "headers"
+
+	// Initial view should contain inherited headers info
+	view := m.View()
+	if !strings.Contains(view, "Inherited from collection.bru") {
+		t.Fatalf("Expected view to show Inherited from collection.bru")
+	}
+	if !strings.Contains(view, "sourceSystem") {
+		t.Fatalf("Expected view to show sourceSystem header")
+	}
+
+	// Press 'i' to start editing
+	newM, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'i'}})
+	m = newM.(Model)
+	if !m.IsEditingContent {
+		t.Fatalf("Expected edit mode to be active")
+	}
+	if !strings.Contains(m.ContentEditText, "sourceSystem: CBE") {
+		t.Fatalf("Expected ContentEditText to have collection headers, got %q", m.ContentEditText)
+	}
+
+	// Modify sourceSystem: CBE -> sourceSystem: TEST_APP
+	m.ContentEditText = strings.Replace(m.ContentEditText, "sourceSystem: CBE", "sourceSystem: TEST_APP\nchannel: MYTIMAPP", 1)
+	m.saveTabContent()
+
+	// Verify coll.CollectionHeaders updated
+	if len(coll.CollectionHeaders) != 3 {
+		t.Fatalf("Expected 3 collection headers, got %d: %+v", len(coll.CollectionHeaders), coll.CollectionHeaders)
+	}
+	if coll.CollectionHeaders[1].Value != "TEST_APP" {
+		t.Errorf("Expected TEST_APP, got %s", coll.CollectionHeaders[1].Value)
+	}
+	if coll.CollectionHeaders[2].Name != "channel" || coll.CollectionHeaders[2].Value != "MYTIMAPP" {
+		t.Errorf("Expected channel: MYTIMAPP, got %+v", coll.CollectionHeaders[2])
+	}
+
+	// Verify collection.bru was written to disk
+	rawBru, err := os.ReadFile(collFile)
+	if err != nil {
+		t.Fatalf("Failed to read collection.bru from disk: %v", err)
+	}
+	if !strings.Contains(string(rawBru), "TEST_APP") || !strings.Contains(string(rawBru), "MYTIMAPP") {
+		t.Errorf("collection.bru file content missing updated headers: %s", string(rawBru))
+	}
+}
+
+func TestRequestPaneWheelScrollingAndProtection(t *testing.T) {
+	req := &bru.BrunoRequest{
+		ID:     "req1",
+		Name:   "Test Request",
+		Method: bru.MethodGet,
+		URL:    "https://example.com/api/test",
+		Headers: []bru.BruHeader{
+			{Name: "H1", Value: "V1", Enabled: true},
+			{Name: "H2", Value: "V2", Enabled: true},
+			{Name: "H3", Value: "V3", Enabled: true},
+			{Name: "H4", Value: "V4", Enabled: true},
+			{Name: "H5", Value: "V5", Enabled: true},
+			{Name: "H6", Value: "V6", Enabled: true},
+			{Name: "H7", Value: "V7", Enabled: true},
+			{Name: "H8", Value: "V8", Enabled: true},
+			{Name: "H9", Value: "V9", Enabled: true},
+			{Name: "H10", Value: "V10", Enabled: true},
+		},
+	}
+	coll := &bru.BrunoCollection{
+		Name:     "TestColl",
+		Requests: []*bru.BrunoRequest{req},
+	}
+
+	m := NewModel(coll)
+	m.Width = 100
+	m.Height = 25
+	sidebarW, _, _, _, _ := m.layoutDimensions()
+
+	// Mouse wheel down over Request Pane (X: sidebarW+5, Y: 8)
+	wheelDown := tea.MouseMsg{
+		X:      sidebarW + 5,
+		Y:      8,
+		Button: tea.MouseButtonWheelDown,
+	}
+	newM, _ := m.Update(wheelDown)
+	m = newM.(Model)
+	if m.ReqScroll != 1 {
+		t.Errorf("Expected ReqScroll=1 after wheel down, got %d", m.ReqScroll)
+	}
+	if m.IsEditingURL {
+		t.Errorf("Mouse wheel down must NEVER trigger URL editing")
+	}
+
+	// Scrolling over row 6 (Method / URL row) with wheel must NOT trigger edit or cycle method
+	wheelOverRow6 := tea.MouseMsg{
+		X:      sidebarW + 5,
+		Y:      6,
+		Button: tea.MouseButtonWheelDown,
+	}
+	newM, _ = m.Update(wheelOverRow6)
+	m = newM.(Model)
+	if m.ReqScroll != 2 {
+		t.Errorf("Expected ReqScroll=2 after wheel over row 6, got %d", m.ReqScroll)
+	}
+	if m.IsEditingURL {
+		t.Errorf("Wheel over row 6 must not activate URL editing")
+	}
+	if m.SelectedRequest.Method != bru.MethodGet {
+		t.Errorf("Wheel over row 6 must not change method, got %s", m.SelectedRequest.Method)
 	}
 }
 

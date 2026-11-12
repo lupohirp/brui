@@ -89,12 +89,17 @@ func parseCollectionBru(filePath string, coll *BrunoCollection) {
 				if trimmed == "" || strings.HasPrefix(trimmed, "//") {
 					continue
 				}
+				enabled := true
+				if strings.HasPrefix(trimmed, "~") {
+					enabled = false
+					trimmed = strings.TrimSpace(strings.TrimPrefix(trimmed, "~"))
+				}
 				colon := strings.Index(trimmed, ":")
 				if colon != -1 {
 					coll.CollectionHeaders = append(coll.CollectionHeaders, BruHeader{
 						Name:    strings.TrimSpace(trimmed[:colon]),
 						Value:   strings.TrimSpace(trimmed[colon+1:]),
-						Enabled: true,
+						Enabled: enabled,
 					})
 				}
 			}

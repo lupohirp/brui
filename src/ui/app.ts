@@ -1,20 +1,29 @@
 import blessed from 'neo-blessed';
-import { BrunoCollection, BrunoRequest, HttpResponse, ConsoleLogEntry, ThemeColors } from '../types';
+import * as path from 'node:path';
+import { BrunoCollection, BrunoFolder, BrunoRequest, HttpResponse, ConsoleLogEntry, ThemeColors } from '../types';
 import { ThemeManager } from '../themes';
-import { CollectionParser } from '../core/parser';
+import { CollectionParser, DiscoveredCollection } from '../core/parser';
 import { HttpClient } from '../core/http-client';
 import { ScriptRunner } from '../core/script-runner';
 import { OAuth2Handler } from '../core/oauth2';
 import { Interpolator } from '../core/interpolation';
 
-export class BruiApp {
-  private collection: BrunoCollection;
-  private parser: CollectionParser;
-  private themeManager: ThemeManager;
-  private scriptRunner: ScriptRunner;
+export type SidebarItem =
+  | { type: 'folder'; folder: BrunoFolder; depth: number }
+  | { type: 'request'; request: BrunoRequest; depth: number };
 
-  private allRequests: BrunoRequest[] = [];
-  private selectedRequestIndex: number = 0;
+export class BruiApp {
+  private collectionPath: string;
+  private collection!: BrunoCollection;
+  private parser!: CollectionParser;
+  private themeManager: ThemeManager;
+  private scriptRunner!: ScriptRunner;
+
+  private visibleTreeItems: SidebarItem[] = [];
+  private expandedFolders: Set<string> = new Set();
+  private selectedTreeIndex: number = 0;
+  private selectedRequest?: BrunoRequest;
+
   private activeRequestTab: 'headers' | 'params' | 'body' | 'auth' | 'pre-script' | 'post-script' | 'docs' = 'headers';
   private activeResponseTab: 'body' | 'headers' | 'console' = 'body';
   private lastResponse?: HttpResponse;
@@ -32,23 +41,70 @@ export class BruiApp {
   private responseContentBox!: blessed.Widgets.BoxElement;
   private statusBar!: blessed.Widgets.BoxElement;
 
+  private collectionModal?: blessed.Widgets.BoxElement;
   private isRunning: boolean = false;
 
   constructor(collectionPath: string, themeName: string = 'Catppuccin Mocha') {
-    this.parser = new CollectionParser(collectionPath);
-    this.collection = this.parser.parse();
+    this.collectionPath = path.resolve(collectionPath);
     this.themeManager = new ThemeManager(themeName);
-    this.scriptRunner = new ScriptRunner(this.collection, this.parser.requestMap);
-
-    this.flattenRequests(this.collection.folders, this.collection.requests);
+    this.loadCollection(this.collectionPath);
   }
 
-  private flattenRequests(folders: any[], requests: BrunoRequest[]) {
-    for (const r of requests) {
-      this.allRequests.push(r);
+  private loadCollection(targetPath: string) {
+    this.collectionPath = targetPath;
+    this.parser = new CollectionParser(this.collectionPath);
+    this.collection = this.parser.parse();
+    this.scriptRunner = new ScriptRunner(this.collection, this.parser.requestMap);
+
+    // Expand top-level folders by default
+    this.expandedFolders.clear();
+    for (const f of this.collection.folders) {
+      this.expandedFolders.add(f.id);
     }
-    for (const f of folders) {
-      this.flattenRequests(f.folders, f.requests);
+
+    this.rebuildTree();
+
+    // Select first available request
+    const firstReq = this.findFirstRequest(this.collection);
+    this.selectedRequest = firstReq;
+  }
+
+  private findFirstRequest(c: BrunoCollection): BrunoRequest | undefined {
+    if (c.requests.length > 0) return c.requests[0];
+    const walk = (folders: BrunoFolder[]): BrunoRequest | undefined => {
+      for (const f of folders) {
+        if (f.requests.length > 0) return f.requests[0];
+        const sub = walk(f.folders);
+        if (sub) return sub;
+      }
+      return undefined;
+    };
+    return walk(c.folders);
+  }
+
+  private rebuildTree() {
+    this.visibleTreeItems = [];
+
+    // Root-level requests
+    for (const r of this.collection.requests) {
+      this.visibleTreeItems.push({ type: 'request', request: r, depth: 0 });
+    }
+
+    // Folders
+    const appendFolder = (folder: BrunoFolder, depth: number) => {
+      this.visibleTreeItems.push({ type: 'folder', folder, depth });
+      if (this.expandedFolders.has(folder.id)) {
+        for (const subF of folder.folders) {
+          appendFolder(subF, depth + 1);
+        }
+        for (const req of folder.requests) {
+          this.visibleTreeItems.push({ type: 'request', request: req, depth: depth + 1 });
+        }
+      }
+    };
+
+    for (const f of this.collection.folders) {
+      appendFolder(f, 0);
     }
   }
 
@@ -97,7 +153,7 @@ export class BruiApp {
       mouse: true
     });
 
-    // 2. Left Sidebar (Requests list)
+    // 2. Left Sidebar (Tree view with folders & requests)
     this.sidebarList = blessed.list({
       parent: this.screen,
       top: 3,
@@ -216,22 +272,19 @@ export class BruiApp {
       mouse: true
     });
 
-    this.populateSidebar();
+    this.renderSidebar();
   }
 
   private applyTheme() {
     const t = this.getTheme();
 
-    // Screen
     this.screen.program.bg(t.bg);
     this.screen.program.fg(t.fg);
 
-    // Header
     this.headerBox.style.bg = t.bg;
     this.headerBox.style.fg = t.fg;
     this.headerBox.style.border.fg = t.border;
 
-    // Sidebar
     this.sidebarList.style.bg = t.bg;
     this.sidebarList.style.fg = t.fg;
     this.sidebarList.style.border.fg = t.borderFocus;
@@ -244,21 +297,18 @@ export class BruiApp {
       hover: { bg: t.surfaceHover }
     };
 
-    // Request Pane
     this.requestPane.style.bg = t.bg;
     this.requestPane.style.fg = t.fg;
     this.requestPane.style.border.fg = t.border;
     this.requestContentBox.style.bg = t.surface;
     this.requestContentBox.style.fg = t.fg;
 
-    // Response Pane
     this.responsePane.style.bg = t.bg;
     this.responsePane.style.fg = t.fg;
     this.responsePane.style.border.fg = t.border;
     this.responseContentBox.style.bg = t.surface;
     this.responseContentBox.style.fg = t.fg;
 
-    // Status Bar
     this.statusBar.style.bg = t.surface;
     this.statusBar.style.fg = t.fg;
 
@@ -276,36 +326,49 @@ export class BruiApp {
 
     this.headerBox.setContent(
       ` {bold}{${t.accent}-fg}⚡ BRUI{/}  ` +
-      `{${t.subtext}-fg}Collection:{/} {bold}${this.collection.name}{/}  ` +
+      `{${t.subtext}-fg}Collection:{/} {bold}{${t.put}-fg}[📁 ${this.collection.name}]{/}  ` +
       `{${t.subtext}-fg}Env:{/} {bold}{${t.options}-fg}[${envName}]{/}  ` +
       `{${t.subtext}-fg}Auth:{/} ${authStatus}  ` +
       `{right}{${t.subtext}-fg}Theme:{/} {${t.put}-fg}${t.name}{/} `
     );
   }
 
-  private populateSidebar() {
+  private renderSidebar() {
     const t = this.getTheme();
     const items: string[] = [];
 
-    for (const req of this.allRequests) {
-      let badgeColor = t.get;
-      if (req.method === 'POST') badgeColor = t.post;
-      else if (req.method === 'PUT') badgeColor = t.put;
-      else if (req.method === 'PATCH') badgeColor = t.patch;
-      else if (req.method === 'DELETE') badgeColor = t.delete;
+    for (const item of this.visibleTreeItems) {
+      const indent = '  '.repeat(item.depth);
+      if (item.type === 'folder') {
+        const isExpanded = this.expandedFolders.has(item.folder.id);
+        const icon = isExpanded ? '📂' : '📁';
+        const arrow = isExpanded ? '▼' : '▶';
+        const total = item.folder.requests.length + item.folder.folders.length;
+        items.push(`${indent}{bold}{${t.accent}-fg}${arrow} ${icon} ${item.folder.name}{/} {${t.subtext}-fg}(${total}){/}`);
+      } else {
+        const req = item.request;
+        let badgeColor = t.get;
+        if (req.method === 'POST') badgeColor = t.post;
+        else if (req.method === 'PUT') badgeColor = t.put;
+        else if (req.method === 'PATCH') badgeColor = t.patch;
+        else if (req.method === 'DELETE') badgeColor = t.delete;
 
-      const formatted = `{bold}{${badgeColor}-fg}${req.method.padEnd(6)}{/} ${req.name}`;
-      items.push(formatted);
+        items.push(`${indent} {bold}{${badgeColor}-fg}${req.method.padEnd(5)}{/} ${req.name}`);
+      }
     }
 
     this.sidebarList.setItems(items);
+    this.screen.render();
   }
 
   private updateRequestView() {
     const t = this.getTheme();
-    const req = this.allRequests[this.selectedRequestIndex];
+    const req = this.selectedRequest;
     if (!req) {
-      this.requestPane.setContent(' No request selected.');
+      this.requestPane.setContent(' No request selected. Expand a folder or select a request.');
+      this.requestTabsBox.setContent('');
+      this.requestContentBox.setContent('');
+      this.screen.render();
       return;
     }
 
@@ -317,12 +380,10 @@ export class BruiApp {
 
     const interpolatedUrl = Interpolator.interpolate(req.url, this.collection);
 
-    // URL Bar
     this.requestPane.setContent(
       ` {bold}{${badgeColor}-fg}${req.method}{/}  {bold}${interpolatedUrl}{/}`
     );
 
-    // Tabs Bar
     const tabs = [
       { id: 'headers', label: `Headers (${req.headers.length})` },
       { id: 'params', label: `Params (${req.params.length})` },
@@ -342,7 +403,6 @@ export class BruiApp {
 
     this.requestTabsBox.setContent(tabStr);
 
-    // Content
     let content = '';
     if (this.activeRequestTab === 'headers') {
       if (req.headers.length === 0) content = '{#6c7086-fg}No custom headers.{/}';
@@ -368,7 +428,7 @@ export class BruiApp {
       }
     } else if (this.activeRequestTab === 'auth') {
       content = `{bold}Auth Type:{/} ${req.authType}\n`;
-      if (req.authType === 'bearer') {
+      if (req.authType === 'bearer' || req.authType === 'inherit') {
         const token = req.authBearerToken || this.collection.collectionAuthBearerToken;
         const resolved = token ? Interpolator.interpolate(token, this.collection) : '(none)';
         content += `{bold}Bearer Token:{/} ${resolved}\n`;
@@ -393,7 +453,7 @@ export class BruiApp {
     const t = this.getTheme();
 
     if (!this.lastResponse) {
-      this.responseHeaderBox.setContent(`{${t.subtext}-fg} No response yet. Press {bold}[Enter]{/} or {bold}[Space]{/} to send.{/}`);
+      this.responseHeaderBox.setContent(`{${t.subtext}-fg} No response yet. Press {bold}[Space]{/} or {bold}[Enter]{/} to send.{/}`);
       this.responseTabsBox.setContent('');
       this.responseContentBox.setContent('');
       this.screen.render();
@@ -417,7 +477,6 @@ export class BruiApp {
       `{${t.subtext}-fg}Size:{/} {bold}${sizeFormatted}{/}`
     );
 
-    // Tabs
     const tabs = [
       { id: 'body', label: 'Response Body' },
       { id: 'headers', label: `Headers (${Object.keys(resp.headers).length})` },
@@ -433,7 +492,6 @@ export class BruiApp {
 
     this.responseTabsBox.setContent(tabStr);
 
-    // Content
     let content = '';
     if (this.activeResponseTab === 'body') {
       if (resp.jsonBody) {
@@ -466,7 +524,6 @@ export class BruiApp {
   private highlightJson(obj: any): string {
     const t = this.getTheme();
     const str = JSON.stringify(obj, null, 2);
-    // Lightweight ANSI syntax highlighting
     return str
       .replace(/"(.*?)":/g, `{bold}{${t.put}-fg}"$1"{/}:`)
       .replace(/: "(.*?)"/g, `: {${t.get}-fg}"$1"{/}`)
@@ -478,12 +535,12 @@ export class BruiApp {
   private updateStatusBar(msg: string) {
     const t = this.getTheme();
     this.statusBar.setContent(
-      ` {bold}[Enter/Space]{/} Send  ` +
+      ` {bold}[Space]{/} Send  ` +
+      `{bold}[C]{/} Open Coll  ` +
       `{bold}[O]{/} OAuth2  ` +
       `{bold}[E]{/} Env  ` +
       `{bold}[T]{/} Theme  ` +
-      `{bold}[1-7]{/} Req Tabs  ` +
-      `{bold}[Tab]{/} Focus  ` +
+      `{bold}[1-7]{/} Tabs  ` +
       `{bold}[q]{/} Quit   ` +
       `{right}{bold}{${t.accent}-fg}${msg}{/} `
     );
@@ -491,29 +548,40 @@ export class BruiApp {
   }
 
   private bindEvents() {
-    // 1. Sidebar selection change
+    // 1. Sidebar selection change & Enter handling
+    this.sidebarList.on('select', (_item: any, index: number) => {
+      this.handleTreeSelection(index);
+    });
+
     this.sidebarList.on('select item', (_item: any, index: number) => {
-      this.selectedRequestIndex = index;
-      this.updateRequestView();
+      this.selectedTreeIndex = index;
+      const target = this.visibleTreeItems[index];
+      if (target && target.type === 'request') {
+        this.selectedRequest = target.request;
+        this.updateRequestView();
+      }
     });
 
-    // 2. Mouse click on sidebar item
+    // 2. Mouse click on sidebar
     this.sidebarList.on('click', () => {
-      this.selectedRequestIndex = (this.sidebarList as any).selected;
-      this.updateRequestView();
+      const idx = (this.sidebarList as any).selected;
+      this.handleTreeSelection(idx);
     });
 
-    // 3. Mouse click on Request Tabs
-    this.requestTabsBox.on('click', (data: any) => {
-      const clickX = data.x;
-      // Cycle tabs on click
+    // 3. Mouse click on Header -> Opens Collection Picker!
+    this.headerBox.on('click', () => {
+      this.openCollectionModal();
+    });
+
+    // 4. Mouse click on Request Tabs
+    this.requestTabsBox.on('click', () => {
       const tabs: Array<typeof this.activeRequestTab> = ['headers', 'params', 'body', 'auth', 'pre-script', 'post-script', 'docs'];
       const curIdx = tabs.indexOf(this.activeRequestTab);
       this.activeRequestTab = tabs[(curIdx + 1) % tabs.length];
       this.updateRequestView();
     });
 
-    // 4. Mouse click on Response Tabs
+    // 5. Mouse click on Response Tabs
     this.responseTabsBox.on('click', () => {
       const tabs: Array<typeof this.activeResponseTab> = ['body', 'headers', 'console'];
       const curIdx = tabs.indexOf(this.activeResponseTab);
@@ -521,14 +589,19 @@ export class BruiApp {
       this.updateResponseView();
     });
 
-    // 5. Global Hotkeys
+    // 6. Global Hotkeys
     this.screen.key(['q', 'C-c'], () => {
       return process.exit(0);
     });
 
-    // Send Request
-    this.screen.key(['enter', 'space'], async () => {
+    // Space key: Send request
+    this.screen.key(['space'], async () => {
       await this.sendActiveRequest();
+    });
+
+    // Open Collection Picker
+    this.screen.key(['c', 'C'], () => {
+      this.openCollectionModal();
     });
 
     // OAuth2 Trigger
@@ -540,7 +613,7 @@ export class BruiApp {
     this.screen.key(['t', 'T'], () => {
       const newTheme = this.themeManager.cycle();
       this.applyTheme();
-      this.populateSidebar();
+      this.renderSidebar();
       this.updateRequestView();
       this.updateResponseView();
       this.updateStatusBar(`Theme: ${newTheme.name}`);
@@ -573,6 +646,112 @@ export class BruiApp {
     });
   }
 
+  private handleTreeSelection(index: number) {
+    const item = this.visibleTreeItems[index];
+    if (!item) return;
+
+    if (item.type === 'folder') {
+      // Toggle folder expansion
+      if (this.expandedFolders.has(item.folder.id)) {
+        this.expandedFolders.delete(item.folder.id);
+      } else {
+        this.expandedFolders.add(item.folder.id);
+      }
+      this.rebuildTree();
+      this.renderSidebar();
+      (this.sidebarList as any).select(index);
+    } else {
+      // Selected request
+      this.selectedRequest = item.request;
+      this.updateRequestView();
+    }
+  }
+
+  private openCollectionModal() {
+    if (this.collectionModal) return;
+
+    const t = this.getTheme();
+    const discovered = CollectionParser.discoverCollections(this.collectionPath);
+
+    this.collectionModal = blessed.box({
+      parent: this.screen,
+      top: 'center',
+      left: 'center',
+      width: '60%',
+      height: '60%',
+      border: { type: 'line' },
+      style: {
+        bg: t.surface,
+        fg: t.fg,
+        border: { fg: t.accent }
+      },
+      tags: true,
+      mouse: true
+    });
+
+    const titleBox = blessed.box({
+      parent: this.collectionModal,
+      top: 0,
+      left: 1,
+      right: 1,
+      height: 2,
+      content: `{bold}{${t.accent}-fg}📂 Select a Bruno Collection{/} {${t.subtext}-fg}(click or press Enter, Esc to cancel){/}`,
+      tags: true
+    });
+
+    const collList = blessed.list({
+      parent: this.collectionModal,
+      top: 2,
+      left: 1,
+      right: 1,
+      bottom: 1,
+      keys: true,
+      vi: true,
+      mouse: true,
+      tags: true,
+      style: {
+        bg: t.surface,
+        fg: t.fg,
+        selected: { bg: t.selection, fg: t.selectionFg, bold: true },
+        item: { hover: { bg: t.surfaceHover } }
+      },
+      items: discovered.map(c => {
+        const isCurrent = c.path === this.collectionPath;
+        const star = isCurrent ? `{${t.get}-fg}● (current){/} ` : '  ';
+        return `${star}{bold}${c.name}{/} {${t.subtext}-fg}${c.path}{/}`;
+      })
+    });
+
+    const closeModal = () => {
+      if (this.collectionModal) {
+        this.collectionModal.destroy();
+        this.collectionModal = undefined;
+        this.sidebarList.focus();
+        this.screen.render();
+      }
+    };
+
+    collList.on('select', (_item: any, index: number) => {
+      const selected = discovered[index];
+      if (selected && selected.path !== this.collectionPath) {
+        this.loadCollection(selected.path);
+        this.updateHeader();
+        this.renderSidebar();
+        this.updateRequestView();
+        this.updateResponseView();
+        this.updateStatusBar(`Switched collection to: ${selected.name}`);
+      }
+      closeModal();
+    });
+
+    this.screen.onceKey('escape', () => {
+      closeModal();
+    });
+
+    collList.focus();
+    this.screen.render();
+  }
+
   private cycleEnvironment() {
     if (this.collection.environments.length === 0) {
       this.updateStatusBar('No environments configured');
@@ -589,25 +768,25 @@ export class BruiApp {
 
   private async sendActiveRequest() {
     if (this.isRunning) return;
-    const req = this.allRequests[this.selectedRequestIndex];
-    if (!req) return;
+    const req = this.selectedRequest;
+    if (!req) {
+      this.updateStatusBar('No request selected');
+      return;
+    }
 
     this.isRunning = true;
     this.scriptRunner.clearLogs();
     this.updateStatusBar(`Executing ${req.method} ${req.name}...`);
 
     try {
-      // 1. Run Pre-request scripts (including collection script with bru.runRequest if needed!)
       await this.scriptRunner.runPreRequestScripts(req);
-      this.updateHeader(); // in case script updated access_token
+      this.updateHeader();
 
-      // 2. Execute HTTP call
       const resp = await HttpClient.execute(req, this.collection);
       this.lastResponse = resp;
 
-      // 3. Run Post-response script
       await this.scriptRunner.runPostResponseScript(req, resp);
-      this.updateHeader(); // in case script saved access_token
+      this.updateHeader();
 
       this.updateResponseView();
       this.updateStatusBar(`Done: ${resp.status} ${resp.statusText} (${resp.durationMs}ms)`);
@@ -619,10 +798,9 @@ export class BruiApp {
   }
 
   private async triggerOAuth2() {
-    const req = this.allRequests[this.selectedRequestIndex];
+    const req = this.selectedRequest;
     let oauthConfig = req?.authOAuth2;
 
-    // If request doesn't have it, check if collection has token endpoint in environment
     if (!oauthConfig && this.collection.activeEnvironment) {
       const env = this.collection.environments.find(e => e.name === this.collection.activeEnvironment);
       if (env) {

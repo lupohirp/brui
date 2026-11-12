@@ -16,6 +16,11 @@ import {
   OAuth2Config
 } from '../types';
 
+export interface DiscoveredCollection {
+  name: string;
+  path: string;
+}
+
 export class CollectionParser {
   private collectionRoot: string;
   public requestMap: Map<string, BrunoRequest> = new Map();
@@ -24,27 +29,103 @@ export class CollectionParser {
     this.collectionRoot = path.resolve(collectionPath);
   }
 
+  public static isBrunoCollection(dir: string): boolean {
+    if (!fs.existsSync(dir) || !fs.statSync(dir).isDirectory()) return false;
+    return (
+      fs.existsSync(path.join(dir, 'bruno.json')) ||
+      fs.existsSync(path.join(dir, 'collection.bru'))
+    );
+  }
+
+  public static discoverCollections(baseDir: string): DiscoveredCollection[] {
+    const results: DiscoveredCollection[] = [];
+    const resolved = path.resolve(baseDir);
+
+    if (!fs.existsSync(resolved) || !fs.statSync(resolved).isDirectory()) {
+      return results;
+    }
+
+    // Check if the directory itself is a collection
+    if (this.isBrunoCollection(resolved)) {
+      results.push({
+        name: this.getCollectionName(resolved),
+        path: resolved
+      });
+    }
+
+    // Check immediate subdirectories
+    try {
+      const entries = fs.readdirSync(resolved, { withFileTypes: true });
+      for (const entry of entries) {
+        if (entry.isDirectory() && !entry.name.startsWith('.') && entry.name !== 'node_modules') {
+          const subPath = path.join(resolved, entry.name);
+          if (this.isBrunoCollection(subPath)) {
+            // Avoid duplicates
+            if (!results.some(r => r.path === subPath)) {
+              results.push({
+                name: this.getCollectionName(subPath),
+                path: subPath
+              });
+            }
+          }
+        }
+      }
+    } catch {
+      // ignore read errors
+    }
+
+    // Also check parent directory for sibling collections!
+    try {
+      const parentDir = path.dirname(resolved);
+      if (parentDir && parentDir !== resolved) {
+        const parentEntries = fs.readdirSync(parentDir, { withFileTypes: true });
+        for (const entry of parentEntries) {
+          if (entry.isDirectory() && !entry.name.startsWith('.') && entry.name !== 'node_modules') {
+            const siblingPath = path.join(parentDir, entry.name);
+            if (this.isBrunoCollection(siblingPath) && !results.some(r => r.path === siblingPath)) {
+              results.push({
+                name: this.getCollectionName(siblingPath),
+                path: siblingPath
+              });
+            }
+          }
+        }
+      }
+    } catch {
+      // ignore
+    }
+
+    return results;
+  }
+
+  private static getCollectionName(dir: string): string {
+    const brunoJsonPath = path.join(dir, 'bruno.json');
+    if (fs.existsSync(brunoJsonPath)) {
+      try {
+        const raw = JSON.parse(fs.readFileSync(brunoJsonPath, 'utf8'));
+        if (raw.name) return raw.name;
+      } catch {}
+    }
+    const collBru = path.join(dir, 'collection.bru');
+    if (fs.existsSync(collBru)) {
+      try {
+        const parsed = collectionBruToJson(fs.readFileSync(collBru, 'utf8')) as any;
+        if (parsed.meta?.name) return parsed.meta.name;
+      } catch {}
+    }
+    return path.basename(dir);
+  }
+
   public parse(): BrunoCollection {
     if (!fs.existsSync(this.collectionRoot)) {
       throw new Error(`Collection path does not exist: ${this.collectionRoot}`);
     }
 
-    let collectionName = path.basename(this.collectionRoot);
+    let collectionName = CollectionParser.getCollectionName(this.collectionRoot);
     let collectionHeaders: BruHeader[] = [];
     let collectionAuthType: 'none' | 'bearer' | 'basic' = 'none';
     let collectionAuthBearerToken: string | undefined;
     let collectionPreRequestScript: string | undefined;
-
-    // Check for bruno.json
-    const brunoJsonPath = path.join(this.collectionRoot, 'bruno.json');
-    if (fs.existsSync(brunoJsonPath)) {
-      try {
-        const raw = JSON.parse(fs.readFileSync(brunoJsonPath, 'utf8'));
-        if (raw.name) collectionName = raw.name;
-      } catch (err) {
-        // ignore malformed bruno.json
-      }
-    }
 
     // Check for collection.bru
     const collectionBruPath = path.join(this.collectionRoot, 'collection.bru');
@@ -131,7 +212,6 @@ export class CollectionParser {
 
     const entries = fs.readdirSync(dir, { withFileTypes: true });
 
-    // Filter and sort entries
     for (const entry of entries) {
       if (entry.name.startsWith('.') || entry.name === 'node_modules') {
         continue;
@@ -142,7 +222,7 @@ export class CollectionParser {
 
       if (entry.isDirectory()) {
         if (entry.name === 'environments') {
-          continue; // Environments handled separately
+          continue;
         }
         const sub = this.scanDirectory(fullPath, currentRelPath);
         folders.push({
@@ -161,7 +241,6 @@ export class CollectionParser {
         const req = this.parseRequestFile(fullPath, currentRelPath);
         if (req) {
           requests.push(req);
-          // Register in map by relative path without extension & with extension
           const cleanRel = currentRelPath.slice(0, -4);
           this.requestMap.set(cleanRel, req);
           this.requestMap.set(currentRelPath, req);
@@ -170,7 +249,6 @@ export class CollectionParser {
       }
     }
 
-    // Sort requests by sequence number or name
     requests.sort((a, b) => a.seq - b.seq || a.name.localeCompare(b.name));
     folders.sort((a, b) => a.name.localeCompare(b.name));
 
@@ -191,7 +269,6 @@ export class CollectionParser {
       const name = parsed.meta?.name || path.basename(filePath, '.bru');
       const seq = Number(parsed.meta?.seq) || 999;
 
-      // Headers
       const headers: BruHeader[] = [];
       if (parsed.headers && Array.isArray(parsed.headers)) {
         for (const h of parsed.headers) {
@@ -203,7 +280,6 @@ export class CollectionParser {
         }
       }
 
-      // Query Params
       const params: BruParam[] = [];
       if (parsed.params && Array.isArray(parsed.params)) {
         for (const p of parsed.params) {
@@ -215,7 +291,6 @@ export class CollectionParser {
         }
       }
 
-      // Body
       let bodyType: BrunoRequest['bodyType'] = 'none';
       let bodyContent = '';
 
@@ -242,7 +317,6 @@ export class CollectionParser {
         }
       }
 
-      // Auth
       let authType: BrunoRequest['authType'] = 'none';
       let authBearerToken: string | undefined;
       let authBasicUser: string | undefined;

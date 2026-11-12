@@ -69,10 +69,22 @@ async function main() {
     }
   }
 
-  const resolvedPath = path.resolve(collectionPath);
+  let resolvedPath = path.resolve(collectionPath);
   if (!fs.existsSync(resolvedPath)) {
     console.error(`\x1b[31mError: Path does not exist: ${resolvedPath}\x1b[0m`);
     process.exit(1);
+  }
+
+  // If the target path itself is not a collection, check if it contains collections
+  const { CollectionParser } = await import('./core/parser');
+  if (!CollectionParser.isBrunoCollection(resolvedPath)) {
+    const discovered = CollectionParser.discoverCollections(resolvedPath);
+    if (discovered.length > 0) {
+      resolvedPath = discovered[0].path;
+    } else {
+      console.error(`\x1b[31mError: No Bruno collection found in: ${resolvedPath}\x1b[0m`);
+      process.exit(1);
+    }
   }
 
   try {

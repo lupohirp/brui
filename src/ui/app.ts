@@ -144,13 +144,13 @@ export class BruiApp {
 
   public start() {
     this.screen = blessed.screen({
-      smartCSR: true,
+      smartCSR: false,
       terminal: 'xterm-256color',
       fullUnicode: true,
       title: `brui - ${this.collection.name}`,
       mouse: true,
       sendFocus: true,
-      useBCE: true,
+      useBCE: false,
       cursor: {
         artificial: true,
         shape: 'line',
@@ -839,12 +839,11 @@ export class BruiApp {
   private updateStatusBar(msg: string) {
     const t = this.getTheme();
     const shortcuts =
-      `{bold}[Space]{/} Send  {bold}[U]{/} URL  {bold}[I]{/} Edit Tab  ` +
+      `{bold}[Space]{/} Send  {bold}[Click/U]{/} URL  {bold}[Click/I]{/} Edit Tab  ` +
       `{bold}[S]{/} Save  {bold}[R]{/} Revert  {bold}[E]{/} Env  {bold}[C]{/} Coll  {bold}[1-7]{/} Tabs  {bold}[q]{/} Quit`;
 
     this.statusBar.setContent(
-      ` ${shortcuts}   ` +
-      `{right}{bold}{${t.accent}-fg}${msg}{/} `
+      ` ${shortcuts}   │   {bold}{${t.accent}-fg}${msg}{/}`
     );
     this.screen.render();
   }

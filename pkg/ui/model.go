@@ -84,6 +84,9 @@ type Model struct {
 	NewReqURL          string
 	NewReqStep         int // 0: Name, 1: URL
 
+	// Theme
+	ThemeIdx int
+
 	// Scrolling
 	RespScroll int
 	ReqScroll  int
@@ -426,7 +429,7 @@ func (m *Model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 			}
 
 			// Shortcuts:
-			// " [Space] Send   [U] Edit URL   [E] Env   [I] Edit Tab   [N] New Req   [M] Method   [S] Save   [q] Quit"
+			// " [Space] Send   [U] Edit URL   [E] Env   [I] Edit Tab   [N] New Req   [T] Theme   [M] Method   [S] Save   [q] Quit"
 			if msg.X >= 1 && msg.X <= 15 {
 				m.executeCurrentRequest()
 			} else if msg.X >= 16 && msg.X <= 29 {
@@ -438,17 +441,19 @@ func (m *Model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 				}
 			} else if msg.X >= 30 && msg.X <= 39 {
 				m.openEnvironmentModal()
-			} else if msg.X >= 40 && msg.X <= 54 {
+			} else if msg.X >= 40 && msg.X <= 53 {
 				if m.SelectedRequest != nil {
 					m.startEditingContent()
 				}
-			} else if msg.X >= 55 && msg.X <= 67 {
+			} else if msg.X >= 54 && msg.X <= 66 {
 				m.openNewRequestPrompt()
-			} else if msg.X >= 68 && msg.X <= 79 {
+			} else if msg.X >= 67 && msg.X <= 77 {
+				m.cycleTheme()
+			} else if msg.X >= 78 && msg.X <= 89 {
 				m.cycleMethod()
-			} else if msg.X >= 80 && msg.X <= 90 {
+			} else if msg.X >= 90 && msg.X <= 99 {
 				_ = m.saveCurrentRequest()
-			} else if msg.X >= 91 {
+			} else if msg.X >= 100 {
 				return *m, tea.Quit
 			}
 			return *m, nil
@@ -884,6 +889,9 @@ func (m *Model) handleNormalKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	case "n", "N", "ctrl+n":
 		m.openNewRequestPrompt()
+
+	case "t", "T":
+		m.cycleTheme()
 
 	case "1":
 		m.ActiveTab = "headers"
@@ -1562,6 +1570,13 @@ func (m *Model) cycleMethod() {
 	m.StatusMsg = fmt.Sprintf("Method changed to: %s", next)
 }
 
+func (m *Model) cycleTheme() {
+	m.ThemeIdx = (m.ThemeIdx + 1) % len(theme.AllThemes)
+	m.Theme = theme.AllThemes[m.ThemeIdx]
+	m.StatusMsg = fmt.Sprintf("Theme changed to: %s", m.Theme.Name)
+}
+
+
 func (m *Model) saveCurrentRequest() error {
 	if m.SelectedRequest == nil || m.SelectedRequest.FilePath == "" {
 		m.StatusMsg = "No request selected to save"
@@ -2239,7 +2254,7 @@ func (m Model) renderStatusBar(width int) string {
 
 	shortcuts := lipgloss.NewStyle().
 		Foreground(lipgloss.Color(m.Theme.Fg)).
-		Render(" [Space] Send   [U] Edit URL   [E] Env   [I] Edit Tab   [N] New Req   [M] Method   [S] Save   [q] Quit")
+		Render(" [Space] Send   [U] Edit URL   [E] Env   [I] Edit Tab   [N] New Req   [T] Theme   [M] Method   [S] Save   [q] Quit")
 
 	status := lipgloss.NewStyle().
 		Foreground(lipgloss.Color(m.Theme.Accent)).
@@ -2273,17 +2288,21 @@ func (m Model) renderEnvironmentModal() string {
 	if modalW > 95 {
 		modalW = 95
 	}
-	modalH := m.Height * 65 / 100
-	if modalH < 14 {
-		modalH = 14
+	maxH := m.Height - 8
+	if maxH < 8 {
+		maxH = 8
 	}
-	if modalH > 26 {
-		modalH = 26
+	modalH := m.Height * 55 / 100
+	if modalH < 10 {
+		modalH = 10
+	}
+	if modalH > maxH {
+		modalH = maxH
 	}
 
 	innerW := modalW - 2
 	innerH := modalH - 2
-	modalBg := lipgloss.Color("#181825")
+	modalBg := lipgloss.Color(m.Theme.ModalBg)
 
 	accent := lipgloss.NewStyle().Foreground(lipgloss.Color(m.Theme.Accent)).Background(modalBg).Bold(true)
 	subtext := lipgloss.NewStyle().Foreground(lipgloss.Color(m.Theme.Subtext)).Background(modalBg)
@@ -2301,9 +2320,15 @@ func (m Model) renderEnvironmentModal() string {
 		titleSpace = 1
 	}
 	row0Text := titleLeft + strings.Repeat(" ", titleSpace) + closeBtn
-	row0 := lipgloss.NewStyle().Width(innerW).MaxWidth(innerW).Background(modalBg).Render(row0Text)
+	row0Text = ansi.Truncate(row0Text, innerW, "")
+	visW0 := ansi.StringWidth(row0Text)
+	if visW0 < innerW {
+		row0Text += strings.Repeat(" ", innerW-visW0)
+	}
+	row0 := lipgloss.NewStyle().Background(modalBg).Render(row0Text)
 
-	row1 := lipgloss.NewStyle().Width(innerW).MaxWidth(innerW).Background(modalBg).Foreground(lipgloss.Color(m.Theme.Border)).Render(strings.Repeat("─", innerW))
+	row1Text := strings.Repeat("─", innerW)
+	row1 := lipgloss.NewStyle().Background(modalBg).Foreground(lipgloss.Color(m.Theme.Border)).Render(row1Text)
 
 	leftW := innerW * 35 / 100
 	if leftW < 18 {
@@ -2344,29 +2369,26 @@ func (m Model) renderEnvironmentModal() string {
 				label = label[:maxLabel-1] + "…"
 			}
 			rowText := " " + label + activeTag
+			truncated := ansi.Truncate(rowText, leftW, "")
+			visW := ansi.StringWidth(truncated)
+			if visW < leftW {
+				truncated += strings.Repeat(" ", leftW-visW)
+			}
 
 			if r == m.EnvModalSelectedIdx {
 				sel := lipgloss.NewStyle().
-					Width(leftW).
-					MaxWidth(leftW).
-					Height(1).
-					MaxHeight(1).
 					Background(lipgloss.Color(m.Theme.Selection)).
 					Foreground(lipgloss.Color(m.Theme.SelectionFg)).
 					Bold(true)
-				leftLines = append(leftLines, sel.Render(rowText))
+				leftLines = append(leftLines, sel.Render(truncated))
 			} else {
 				norm := lipgloss.NewStyle().
-					Width(leftW).
-					MaxWidth(leftW).
-					Height(1).
-					MaxHeight(1).
 					Background(modalBg).
 					Foreground(lipgloss.Color(m.Theme.Fg))
-				leftLines = append(leftLines, norm.Render(rowText))
+				leftLines = append(leftLines, norm.Render(truncated))
 			}
 		} else {
-			leftLines = append(leftLines, lipgloss.NewStyle().Width(leftW).MaxWidth(leftW).Height(1).MaxHeight(1).Background(modalBg).Render(strings.Repeat(" ", leftW)))
+			leftLines = append(leftLines, lipgloss.NewStyle().Background(modalBg).Render(strings.Repeat(" ", leftW)))
 		}
 	}
 
@@ -2413,29 +2435,27 @@ func (m Model) renderEnvironmentModal() string {
 	for r := 0; r < contentH; r++ {
 		if r < len(rightLines) {
 			lineText := rightLines[r]
+			truncated := ansi.Truncate(lineText, rightW, "")
+			visW := ansi.StringWidth(truncated)
+			if visW < rightW {
+				truncated += strings.Repeat(" ", rightW-visW)
+			}
+
 			isVarSelected := (m.EnvModalFocusPane == "vars" && r > 0 && r-1 == m.EnvModalVarIdx)
 			if isVarSelected {
 				sel := lipgloss.NewStyle().
-					Width(rightW).
-					MaxWidth(rightW).
-					Height(1).
-					MaxHeight(1).
 					Background(lipgloss.Color(m.Theme.Selection)).
 					Foreground(lipgloss.Color(m.Theme.SelectionFg)).
 					Bold(true)
-				finalRightLines = append(finalRightLines, sel.Render(lineText))
+				finalRightLines = append(finalRightLines, sel.Render(truncated))
 			} else {
 				norm := lipgloss.NewStyle().
-					Width(rightW).
-					MaxWidth(rightW).
-					Height(1).
-					MaxHeight(1).
 					Background(modalBg).
 					Foreground(lipgloss.Color(m.Theme.Fg))
-				finalRightLines = append(finalRightLines, norm.Render(lineText))
+				finalRightLines = append(finalRightLines, norm.Render(truncated))
 			}
 		} else {
-			finalRightLines = append(finalRightLines, lipgloss.NewStyle().Width(rightW).MaxWidth(rightW).Height(1).MaxHeight(1).Background(modalBg).Render(strings.Repeat(" ", rightW)))
+			finalRightLines = append(finalRightLines, lipgloss.NewStyle().Background(modalBg).Render(strings.Repeat(" ", rightW)))
 		}
 	}
 
@@ -2447,11 +2467,22 @@ func (m Model) renderEnvironmentModal() string {
 
 	var footer string
 	if m.EnvModalFocusPane == "envs" {
-		footer = subtext.Render(" [Tab] Focus Vars   [↑/↓] Select   [Enter] Activate   [N] New Env   [Esc] Close")
+		footer = "[Tab] Focus Vars  [↑/↓] Select  [Enter] Activate  [N] New Env  [Esc] Close"
 	} else {
-		footer = accent.Render(" [Tab] Focus Envs   [↑/↓] Select   [Enter] Edit Value   [N] Add Var   [D] Delete   [S] Save")
+		footer = "[Tab] Focus Envs  [↑/↓] Select  [Enter] Edit Val  [N] Add Var  [D] Del  [Esc] Close"
 	}
-	footerLine := lipgloss.NewStyle().Width(innerW).MaxWidth(innerW).Background(modalBg).Render(" " + footer)
+	footerTruncated := ansi.Truncate(footer, innerW-2, "")
+	visWFoot := ansi.StringWidth(footerTruncated)
+	if visWFoot < innerW-2 {
+		footerTruncated += strings.Repeat(" ", innerW-2-visWFoot)
+	}
+	var footerStyled string
+	if m.EnvModalFocusPane == "envs" {
+		footerStyled = subtext.Render(" " + footerTruncated + " ")
+	} else {
+		footerStyled = accent.Render(" " + footerTruncated + " ")
+	}
+	footerLine := lipgloss.NewStyle().Background(modalBg).Render(footerStyled)
 
 	allModalRows := []string{row0, row1}
 	allModalRows = append(allModalRows, middleRows...)
@@ -2463,12 +2494,13 @@ func (m Model) renderEnvironmentModal() string {
 		Height(modalH - 2).
 		MaxHeight(modalH).
 		BorderStyle(lipgloss.RoundedBorder()).
-		BorderForeground(lipgloss.Color(m.Theme.Accent)).
+		BorderForeground(lipgloss.Color(m.Theme.BorderFocus)).
 		BorderBackground(modalBg).
 		Background(modalBg)
 
 	return modalBoxStyle.Render(strings.Join(allModalRows, "\n"))
 }
+
 
 func (m Model) renderPromptModal() string {
 	modalW := 56
@@ -2477,8 +2509,8 @@ func (m Model) renderPromptModal() string {
 	}
 	modalH := 8
 	innerW := modalW - 2
-	modalBg := lipgloss.Color("#181825")
-	inputBg := lipgloss.Color("#1e1e2e")
+	modalBg := lipgloss.Color(m.Theme.ModalBg)
+	inputBg := lipgloss.Color(m.Theme.Surface)
 
 	titleStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(m.Theme.Accent)).Background(modalBg).Bold(true)
 	subtext := lipgloss.NewStyle().Foreground(lipgloss.Color(m.Theme.Subtext)).Background(modalBg)
@@ -2533,7 +2565,7 @@ func (m Model) renderPromptModal() string {
 		Height(modalH - 2).
 		MaxHeight(modalH).
 		BorderStyle(lipgloss.RoundedBorder()).
-		BorderForeground(lipgloss.Color(m.Theme.Accent)).
+		BorderForeground(lipgloss.Color(m.Theme.BorderFocus)).
 		BorderBackground(modalBg).
 		Background(modalBg)
 
@@ -2547,8 +2579,8 @@ func (m Model) renderNewReqModal() string {
 	}
 	modalH := 12
 	innerW := modalW - 2
-	modalBg := lipgloss.Color("#181825")
-	inputBg := lipgloss.Color("#1e1e2e")
+	modalBg := lipgloss.Color(m.Theme.ModalBg)
+	inputBg := lipgloss.Color(m.Theme.Surface)
 
 	titleStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(m.Theme.Accent)).Background(modalBg).Bold(true)
 	subtext := lipgloss.NewStyle().Foreground(lipgloss.Color(m.Theme.Subtext)).Background(modalBg)
@@ -2623,7 +2655,7 @@ func (m Model) renderNewReqModal() string {
 		Height(modalH - 2).
 		MaxHeight(modalH).
 		BorderStyle(lipgloss.RoundedBorder()).
-		BorderForeground(lipgloss.Color(m.Theme.Accent)).
+		BorderForeground(lipgloss.Color(m.Theme.BorderFocus)).
 		BorderBackground(modalBg).
 		Background(modalBg)
 
@@ -2639,10 +2671,21 @@ func overlayModal(base string, modal string, screenW, screenH int) string {
 	modalW := ansi.StringWidth(modalLines[0])
 
 	startRow := (screenH - modalH) / 2
-	startCol := (screenW - modalW) / 2
+	if screenH >= 12 {
+		availH := screenH - 6 // rows 5 to screenH-2 (between header and status bar)
+		startRow = 5 + (availH-modalH)/2
+		if startRow < 5 {
+			startRow = 5
+		}
+		if startRow+modalH > screenH-1 {
+			startRow = screenH - 1 - modalH
+		}
+	}
 	if startRow < 0 {
 		startRow = 0
 	}
+
+	startCol := (screenW - modalW) / 2
 	if startCol < 0 {
 		startCol = 0
 	}

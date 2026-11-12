@@ -605,6 +605,32 @@ func TestCreateNewRequest(t *testing.T) {
 	}
 }
 
+func TestEnvironmentModalVisual(t *testing.T) {
+	coll := &bru.BrunoCollection{
+		Name: "APIGEE",
+		Environments: []*bru.BrunoEnvironment{
+			{Name: "EVO", Variables: map[string]string{"FQDN": "https://api.test", "KEY": "val"}},
+			{Name: "GREEN", Variables: map[string]string{"FQDN": "https://api.prod"}},
+		},
+		ActiveEnvironment: "EVO",
+	}
+	m := NewModel(coll)
+	m.Width = 100
+	m.Height = 24
+	m.IsEnvModalOpen = true
+
+	out := m.View()
+	lines := strings.Split(out, "\n")
+	t.Logf("Total rendered lines: %d (expected %d)", len(lines), m.Height)
+	for i, l := range lines {
+		w := ansi.StringWidth(l)
+		t.Logf("Line %2d (width=%d): %s", i, w, l)
+		if w != m.Width {
+			t.Errorf("Line %d width = %d, expected %d", i, w, m.Width)
+		}
+	}
+}
+
 func TestEnvironmentAndVariableEditing(t *testing.T) {
 	tempDir, err := os.MkdirTemp("", "brui-test-env-*")
 	if err != nil {
@@ -702,4 +728,58 @@ func TestEnvironmentAndVariableEditing(t *testing.T) {
 		t.Errorf("Expected 2 variables after delete, got %d", len(env1.Variables))
 	}
 }
+
+func TestThemeCycling(t *testing.T) {
+	coll := &bru.BrunoCollection{Name: "TestColl"}
+	m := NewModel(coll)
+	m.Width = 100
+	m.Height = 30
+
+	if m.Theme.Name != "Catppuccin Mocha" {
+		t.Errorf("Expected initial theme Mocha, got %s", m.Theme.Name)
+	}
+
+	// Press 't' to cycle theme
+	newM, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'t'}})
+	m = newM.(Model)
+	if m.Theme.Name != "Catppuccin Macchiato" {
+		t.Errorf("Expected Macchiato, got %s", m.Theme.Name)
+	}
+
+	// Press 't' again -> Frappe
+	newM, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'t'}})
+	m = newM.(Model)
+	if m.Theme.Name != "Catppuccin Frappé" {
+		t.Errorf("Expected Frappe, got %s", m.Theme.Name)
+	}
+
+	// Press 't' again -> Latte
+	newM, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'t'}})
+	m = newM.(Model)
+	if m.Theme.Name != "Catppuccin Latte" {
+		t.Errorf("Expected Latte, got %s", m.Theme.Name)
+	}
+
+	// Check modal in Latte theme uses Latte ModalBg
+	m.IsEnvModalOpen = true
+	modalView := m.View()
+	if !strings.Contains(modalView, "ENVIRONMENT & VARIABLES MANAGER") {
+		t.Errorf("Expected modal title in Latte theme")
+	}
+
+	// Click on [T] Theme in status bar (X: 72, Y: 29) -> cycles back to Mocha
+	m.IsEnvModalOpen = false
+	themeClick := tea.MouseMsg{
+		X:      72,
+		Y:      29,
+		Action: tea.MouseActionPress,
+		Button: tea.MouseButtonLeft,
+	}
+	newM, _ = m.Update(themeClick)
+	m = newM.(Model)
+	if m.Theme.Name != "Catppuccin Mocha" {
+		t.Errorf("Expected cycle back to Mocha via mouse click, got %s", m.Theme.Name)
+	}
+}
+
 

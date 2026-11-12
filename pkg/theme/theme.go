@@ -7,6 +7,7 @@ type Theme struct {
 	Bg          string
 	Fg          string
 	Surface     string
+	ModalBg     string
 	Border      string
 	BorderFocus string
 	Selection   string
@@ -29,6 +30,7 @@ var Mocha = Theme{
 	Bg:          "", // Use terminal native default
 	Fg:          "#cdd6f4",
 	Surface:     "#313244",
+	ModalBg:     "#1e1e2e",
 	Border:      "#45475a",
 	BorderFocus: "#cba6f7",
 	Selection:   "#45475a",
@@ -51,6 +53,7 @@ var Macchiato = Theme{
 	Bg:          "",
 	Fg:          "#cad3f5",
 	Surface:     "#363a4f",
+	ModalBg:     "#24273a",
 	Border:      "#494d64",
 	BorderFocus: "#c6a0f6",
 	Selection:   "#494d64",
@@ -73,6 +76,7 @@ var Frappe = Theme{
 	Bg:          "",
 	Fg:          "#c6d0f5",
 	Surface:     "#414559",
+	ModalBg:     "#303446",
 	Border:      "#51576d",
 	BorderFocus: "#ca9ee6",
 	Selection:   "#51576d",
@@ -89,7 +93,31 @@ var Frappe = Theme{
 	Error:       "#e78284",
 }
 
-var AllThemes = []Theme{Mocha, Macchiato, Frappe}
+// Catppuccin Latte (Light)
+var Latte = Theme{
+	Name:        "Catppuccin Latte",
+	Bg:          "#eff1f5",
+	Fg:          "#4c4f69",
+	Surface:     "#e6e9ef",
+	ModalBg:     "#dce0e8",
+	Border:      "#9ca0b0",
+	BorderFocus: "#8839ef",
+	Selection:   "#ccd0da",
+	SelectionFg: "#4c4f69",
+	Accent:      "#8839ef",
+	Subtext:     "#6c6f85",
+	Get:         "#40a02b",
+	Post:        "#df8e1d",
+	Put:         "#1e66f5",
+	Patch:       "#fe640b",
+	Delete:      "#d20f39",
+	Success:     "#40a02b",
+	Warn:        "#fe640b",
+	Error:       "#d20f39",
+}
+
+var AllThemes = []Theme{Mocha, Macchiato, Frappe, Latte}
+
 
 func MethodColor(method string, t Theme) lipgloss.Color {
 	switch method {

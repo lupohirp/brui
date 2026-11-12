@@ -623,23 +623,7 @@ func (m *Model) startEditingContent() {
 				lines = append(lines, fmt.Sprintf("# %s: %s", h.Name, h.Value))
 			}
 		}
-		reqEndCursor := len(strings.Join(lines, "\n"))
-		if m.Coll != nil && len(m.Coll.CollectionHeaders) > 0 {
-			lines = append(lines, "")
-			lines = append(lines, "# --- Inherited from collection.bru ---")
-			for _, ch := range m.Coll.CollectionHeaders {
-				if ch.Enabled {
-					lines = append(lines, fmt.Sprintf("%s: %s", ch.Name, ch.Value))
-				} else {
-					lines = append(lines, fmt.Sprintf("# %s: %s", ch.Name, ch.Value))
-				}
-			}
-		}
 		m.ContentEditText = strings.Join(lines, "\n")
-		m.ContentCursor = reqEndCursor
-		m.ContentScroll = 0
-		m.StatusMsg = fmt.Sprintf("Editing %s. [Esc] Done  [Ctrl+S] Save  [Enter] Newline", m.ActiveTab)
-		return
 	case "params":
 		var lines []string
 		for _, p := range req.Params {
@@ -672,19 +656,10 @@ func (m *Model) saveTabContent() {
 	switch m.ActiveTab {
 	case "headers":
 		var newReqHeaders []bru.BruHeader
-		var newCollHeaders []bru.BruHeader
-		inCollSection := false
-		hasCollSection := false
-
 		lines := strings.Split(m.ContentEditText, "\n")
 		for _, l := range lines {
 			trimmed := strings.TrimSpace(l)
 			if trimmed == "" {
-				continue
-			}
-			if strings.Contains(strings.ToLower(trimmed), "inherited from collection.bru") {
-				inCollSection = true
-				hasCollSection = true
 				continue
 			}
 			enabled := true
@@ -696,24 +671,15 @@ func (m *Model) saveTabContent() {
 			if idx > 0 {
 				name := strings.TrimSpace(trimmed[:idx])
 				val := strings.TrimSpace(trimmed[idx+1:])
-				hdr := bru.BruHeader{
+				newReqHeaders = append(newReqHeaders, bru.BruHeader{
 					Name:    name,
 					Value:   val,
 					Enabled: enabled,
-				}
-				if inCollSection {
-					newCollHeaders = append(newCollHeaders, hdr)
-				} else {
-					newReqHeaders = append(newReqHeaders, hdr)
-				}
+				})
 			}
 		}
 		req.Headers = newReqHeaders
 		m.ModifiedRequests[req.ID] = true
-		if hasCollSection && m.Coll != nil {
-			m.Coll.CollectionHeaders = newCollHeaders
-			_ = m.saveCollectionBru()
-		}
 
 	case "params":
 		var newParams []bru.BruParam
@@ -2086,17 +2052,15 @@ func (m Model) renderRequestPane(width, height int) string {
 	switch m.ActiveTab {
 	case "headers":
 		for _, h := range req.Headers {
-			contentLines = append(contentLines, fmt.Sprintf(" %s: %s", lipgloss.NewStyle().Bold(true).Render(h.Name), h.Value))
-		}
-		if len(m.Coll.CollectionHeaders) > 0 {
-			sub := lipgloss.NewStyle().Foreground(lipgloss.Color(m.Theme.Subtext))
-			acc := lipgloss.NewStyle().Foreground(lipgloss.Color(m.Theme.Accent)).Bold(true)
-			sep := fmt.Sprintf(" --- Inherited from collection.bru (%d) ---", len(m.Coll.CollectionHeaders))
-			hint := " [Click or 'i' to edit]"
-			contentLines = append(contentLines, acc.Render(sep)+sub.Render(hint))
-			for _, ch := range m.Coll.CollectionHeaders {
-				contentLines = append(contentLines, sub.Render(fmt.Sprintf(" %s: %s", ch.Name, ch.Value)))
+			if h.Enabled {
+				contentLines = append(contentLines, fmt.Sprintf(" %s: %s", lipgloss.NewStyle().Bold(true).Render(h.Name), h.Value))
+			} else {
+				sub := lipgloss.NewStyle().Foreground(lipgloss.Color(m.Theme.Subtext))
+				contentLines = append(contentLines, sub.Render(fmt.Sprintf(" # %s: %s", h.Name, h.Value)))
 			}
+		}
+		if len(req.Headers) == 0 {
+			contentLines = append(contentLines, " (No headers)")
 		}
 	case "params":
 		for _, p := range req.Params {

@@ -796,24 +796,18 @@ func TestThemeCycling(t *testing.T) {
 	}
 }
 
-func TestInheritedCollectionHeadersEditing(t *testing.T) {
-	tmpDir := t.TempDir()
-	reqFile := tmpDir + "/test_req.bru"
-	collFile := tmpDir + "/collection.bru"
-
+func TestHeadersTabCleanDisplayAndEdit(t *testing.T) {
 	req := &bru.BrunoRequest{
-		ID:       "req1",
-		Name:     "Test Request",
-		Method:   bru.MethodPost,
-		URL:      "https://example.com/api/test",
-		FilePath: reqFile,
+		ID:     "req1",
+		Name:   "Test Request",
+		Method: bru.MethodPost,
+		URL:    "https://example.com/api/test",
 		Headers: []bru.BruHeader{
 			{Name: "Content-Type", Value: "application/json", Enabled: true},
 		},
 	}
 	coll := &bru.BrunoCollection{
 		Name: "TestColl",
-		Path: tmpDir,
 		CollectionHeaders: []bru.BruHeader{
 			{Name: "Accept-Encoding", Value: "gzip,deflate", Enabled: true},
 			{Name: "sourceSystem", Value: "CBE", Enabled: true},
@@ -826,47 +820,23 @@ func TestInheritedCollectionHeadersEditing(t *testing.T) {
 	m.Height = 30
 	m.ActiveTab = "headers"
 
-	// Initial view should contain inherited headers info
+	// View should NOT show duplicated/cluttered Inherited from collection.bru section
 	view := m.View()
-	if !strings.Contains(view, "Inherited from collection.bru") {
-		t.Fatalf("Expected view to show Inherited from collection.bru")
+	if strings.Contains(view, "Inherited from collection.bru") {
+		t.Fatalf("Expected view NOT to show Inherited from collection.bru")
 	}
-	if !strings.Contains(view, "sourceSystem") {
-		t.Fatalf("Expected view to show sourceSystem header")
+	if !strings.Contains(view, "Content-Type") {
+		t.Fatalf("Expected view to show request Content-Type header")
 	}
 
-	// Press 'i' to start editing
+	// Press 'i' to start editing -> should only edit request headers cleanly
 	newM, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'i'}})
 	m = newM.(Model)
 	if !m.IsEditingContent {
 		t.Fatalf("Expected edit mode to be active")
 	}
-	if !strings.Contains(m.ContentEditText, "sourceSystem: CBE") {
-		t.Fatalf("Expected ContentEditText to have collection headers, got %q", m.ContentEditText)
-	}
-
-	// Modify sourceSystem: CBE -> sourceSystem: TEST_APP
-	m.ContentEditText = strings.Replace(m.ContentEditText, "sourceSystem: CBE", "sourceSystem: TEST_APP\nchannel: MYTIMAPP", 1)
-	m.saveTabContent()
-
-	// Verify coll.CollectionHeaders updated
-	if len(coll.CollectionHeaders) != 3 {
-		t.Fatalf("Expected 3 collection headers, got %d: %+v", len(coll.CollectionHeaders), coll.CollectionHeaders)
-	}
-	if coll.CollectionHeaders[1].Value != "TEST_APP" {
-		t.Errorf("Expected TEST_APP, got %s", coll.CollectionHeaders[1].Value)
-	}
-	if coll.CollectionHeaders[2].Name != "channel" || coll.CollectionHeaders[2].Value != "MYTIMAPP" {
-		t.Errorf("Expected channel: MYTIMAPP, got %+v", coll.CollectionHeaders[2])
-	}
-
-	// Verify collection.bru was written to disk
-	rawBru, err := os.ReadFile(collFile)
-	if err != nil {
-		t.Fatalf("Failed to read collection.bru from disk: %v", err)
-	}
-	if !strings.Contains(string(rawBru), "TEST_APP") || !strings.Contains(string(rawBru), "MYTIMAPP") {
-		t.Errorf("collection.bru file content missing updated headers: %s", string(rawBru))
+	if strings.Contains(m.ContentEditText, "Inherited from collection.bru") {
+		t.Fatalf("Expected ContentEditText NOT to have collection headers banner, got %q", m.ContentEditText)
 	}
 }
 

@@ -264,17 +264,93 @@ func TestMouseInteractions(t *testing.T) {
 	newM, _ = m.Update(sidebarWheelDown)
 	m = newM.(Model)
 
-	// 7. Click on Env button in status bar (X: 35, Y: 29)
+	// 7. Click on Env button in status bar (X: 35, Y: 29) -> Opens Environment Modal
 	envClick := tea.MouseMsg{
 		X:      35,
 		Y:      29,
 		Action: tea.MouseActionPress,
 		Button: tea.MouseButtonLeft,
 	}
-	prevEnv := m.Coll.ActiveEnvironment
 	newM, _ = m.Update(envClick)
 	m = newM.(Model)
-	if m.Coll.ActiveEnvironment == prevEnv {
-		t.Errorf("Expected ActiveEnvironment to cycle after clicking Env in status bar")
+	if !m.IsEnvModalOpen {
+		t.Errorf("Expected IsEnvModalOpen to be true after clicking Env in status bar")
+	}
+
+	// Click on second environment inside modal to activate it
+	modalClick := tea.MouseMsg{
+		X:      20,
+		Y:      8, // Row inside modal environment list
+		Action: tea.MouseActionPress,
+		Button: tea.MouseButtonLeft,
+	}
+	newM, _ = m.Update(modalClick)
+	m = newM.(Model)
+	if m.IsEnvModalOpen {
+		t.Errorf("Expected modal to close after selecting environment")
+	}
+}
+
+func TestSidebarLongNameNoWrap(t *testing.T) {
+	coll := &bru.BrunoCollection{
+		Name: "TestLongNames",
+		Requests: []*bru.BrunoRequest{
+			{
+				ID:     "r1",
+				Name:   "Reset Password - Set New Password (Very Long Name That Exceeds Width)",
+				Method: bru.MethodPut,
+			},
+		},
+	}
+	m := NewModel(coll)
+	m.Width = 80
+	m.Height = 24
+
+	view := m.renderSidebar(24, 18)
+	lines := strings.Split(view, "\n")
+	if len(lines) != 18 {
+		t.Fatalf("Expected sidebar height to be 18 lines, got %d", len(lines))
+	}
+	for i, l := range lines {
+		t.Logf("Line %d: %q", i, l)
+		w := lipgloss.Width(l)
+		if w != 24 {
+			t.Errorf("Line %d width was %d, expected 24: %q", i, w, l)
+		}
+	}
+}
+
+func TestEnvironmentModal(t *testing.T) {
+	coll := &bru.BrunoCollection{
+		Name:              "APIGEE",
+		ActiveEnvironment: "SIT",
+		Environments: []*bru.BrunoEnvironment{
+			{Name: "EVO", Variables: map[string]string{"HOST": "evo.tim.it"}},
+			{Name: "GREEN", Variables: map[string]string{"HOST": "green.tim.it"}},
+			{Name: "SIT", Variables: map[string]string{"HOST": "sit.tim.it", "TOKEN": "secret123"}},
+		},
+	}
+	m := NewModel(coll)
+	m.Width = 100
+	m.Height = 30
+	m.IsEnvModalOpen = true
+	m.EnvModalSelectedIdx = 2 // SIT
+
+	view := m.View()
+	w := lipgloss.Width(view)
+	h := lipgloss.Height(view)
+
+	if w != 100 {
+		t.Errorf("Expected modal view width 100, got %d", w)
+	}
+	if h != 30 {
+		t.Errorf("Expected modal view height 30, got %d", h)
+	}
+
+	if !strings.Contains(view, "ENVIRONMENT & VARIABLES MANAGER") {
+		t.Errorf("Expected view to contain modal title")
+	}
+	if !strings.Contains(view, "SIT") {
+		t.Errorf("Expected view to contain SIT environment")
 	}
 }

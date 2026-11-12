@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -56,6 +57,10 @@ type Model struct {
 	ACSelectedIdx int
 	ACMatchPrefix string
 	ACMatchStart  int
+
+	// Environment Modal
+	IsEnvModalOpen      bool
+	EnvModalSelectedIdx int
 
 	// Scrolling
 	RespScroll int
@@ -174,6 +179,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case tea.KeyMsg:
+		if m.IsEnvModalOpen {
+			return m.handleEnvModalKeys(msg)
+		}
 		if m.IsEditingURL {
 			return m.handleURLEditKeys(msg)
 		}
@@ -189,6 +197,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 func (m *Model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 	if m.Width <= 0 || m.Height <= 0 {
 		return *m, nil
+	}
+
+	if m.IsEnvModalOpen {
+		return m.handleEnvModalMouse(msg)
 	}
 
 	sidebarW, contentW, bodyH, reqH, respH := m.layoutDimensions()
@@ -266,7 +278,7 @@ func (m *Model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 				// Line 2: " <dog2>  Collection [C]: [name]   Env [E]: [env]"
 				collEnd := 12 + 16 + len(m.Coll.Name) + 2
 				if msg.X >= collEnd {
-					m.cycleEnvironment()
+					m.openEnvironmentModal()
 				} else if msg.X >= 11 {
 					m.StatusMsg = fmt.Sprintf("Collection: %s (%d requests)", m.Coll.Name, len(m.Coll.Requests))
 				}
@@ -384,7 +396,7 @@ func (m *Model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 					m.updateAutocomplete()
 				}
 			} else if msg.X >= 30 && msg.X <= 39 {
-				m.cycleEnvironment()
+				m.openEnvironmentModal()
 			} else if msg.X >= 40 && msg.X <= 53 {
 				m.cycleMethod()
 			} else if msg.X >= 54 && msg.X <= 66 {
@@ -544,7 +556,7 @@ func (m *Model) handleNormalKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 
 	case "e", "E":
-		m.cycleEnvironment()
+		m.openEnvironmentModal()
 
 	case "m", "M":
 		m.cycleMethod()
@@ -629,6 +641,121 @@ func (m *Model) cycleEnvironment() {
 	nextIdx := (idx + 1) % len(m.Coll.Environments)
 	m.Coll.ActiveEnvironment = m.Coll.Environments[nextIdx].Name
 	m.StatusMsg = fmt.Sprintf("Environment switched to: [%s]", m.Coll.ActiveEnvironment)
+}
+
+func (m *Model) openEnvironmentModal() {
+	m.IsEnvModalOpen = true
+	idx := 0
+	for i, env := range m.Coll.Environments {
+		if env.Name == m.Coll.ActiveEnvironment {
+			idx = i + 1
+			break
+		}
+	}
+	m.EnvModalSelectedIdx = idx
+	m.StatusMsg = "Environment Manager open. [↑/↓] Select   [Enter] Activate   [Esc] Close"
+}
+
+func (m *Model) handleEnvModalKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	totalEnvs := len(m.Coll.Environments) + 1
+
+	switch msg.String() {
+	case "esc", "q", "ctrl+c":
+		m.IsEnvModalOpen = false
+		m.StatusMsg = "Ready"
+		return *m, nil
+
+	case "up", "k":
+		if m.EnvModalSelectedIdx > 0 {
+			m.EnvModalSelectedIdx--
+		}
+
+	case "down", "j":
+		if m.EnvModalSelectedIdx < totalEnvs-1 {
+			m.EnvModalSelectedIdx++
+		}
+
+	case "enter", " ":
+		if m.EnvModalSelectedIdx == 0 {
+			m.Coll.ActiveEnvironment = ""
+			m.StatusMsg = "Environment disabled (No Environment)"
+		} else {
+			chosen := m.Coll.Environments[m.EnvModalSelectedIdx-1]
+			m.Coll.ActiveEnvironment = chosen.Name
+			m.StatusMsg = fmt.Sprintf("Environment switched to: [%s]", chosen.Name)
+		}
+		m.IsEnvModalOpen = false
+	}
+	return *m, nil
+}
+
+func (m *Model) handleEnvModalMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
+	modalW := m.Width * 75 / 100
+	if modalW < 54 {
+		modalW = 54
+	}
+	if modalW > 95 {
+		modalW = 95
+	}
+	modalH := m.Height * 65 / 100
+	if modalH < 14 {
+		modalH = 14
+	}
+	if modalH > 26 {
+		modalH = 26
+	}
+
+	startRow := (m.Height - modalH) / 2
+	startCol := (m.Width - modalW) / 2
+	totalEnvs := len(m.Coll.Environments) + 1
+
+	if msg.Button == tea.MouseButtonWheelUp {
+		if m.EnvModalSelectedIdx > 0 {
+			m.EnvModalSelectedIdx--
+		}
+		return *m, nil
+	}
+	if msg.Button == tea.MouseButtonWheelDown {
+		if m.EnvModalSelectedIdx < totalEnvs-1 {
+			m.EnvModalSelectedIdx++
+		}
+		return *m, nil
+	}
+
+	if msg.Action == tea.MouseActionPress && msg.Button == tea.MouseButtonLeft {
+		if msg.X < startCol || msg.X >= startCol+modalW || msg.Y < startRow || msg.Y >= startRow+modalH {
+			m.IsEnvModalOpen = false
+			return *m, nil
+		}
+
+		relX := msg.X - startCol
+		relY := msg.Y - startRow
+
+		// Close button
+		if relY <= 1 && relX >= modalW-14 {
+			m.IsEnvModalOpen = false
+			return *m, nil
+		}
+
+		// Envs list
+		if relY >= 2 && relY < modalH-2 {
+			clickedEnvIdx := relY - 2
+			if clickedEnvIdx >= 0 && clickedEnvIdx < totalEnvs {
+				m.EnvModalSelectedIdx = clickedEnvIdx
+				if clickedEnvIdx == 0 {
+					m.Coll.ActiveEnvironment = ""
+					m.StatusMsg = "Environment disabled (No Environment)"
+				} else {
+					chosen := m.Coll.Environments[clickedEnvIdx-1]
+					m.Coll.ActiveEnvironment = chosen.Name
+					m.StatusMsg = fmt.Sprintf("Environment switched to: [%s]", chosen.Name)
+				}
+				m.IsEnvModalOpen = false
+				return *m, nil
+			}
+		}
+	}
+	return *m, nil
 }
 
 func (m *Model) cycleMethod() {
@@ -790,8 +917,14 @@ func (m Model) View() string {
 	content := m.renderContent(contentW, bodyH)
 
 	body := lipgloss.JoinHorizontal(lipgloss.Top, sidebar, content)
+	base := lipgloss.JoinVertical(lipgloss.Left, header, body, statusBar)
 
-	return lipgloss.JoinVertical(lipgloss.Left, header, body, statusBar)
+	if m.IsEnvModalOpen {
+		modal := m.renderEnvironmentModal()
+		return overlayModal(base, modal, m.Width, m.Height)
+	}
+
+	return base
 }
 
 func (m Model) renderHeader(width, height int) string {
@@ -887,22 +1020,73 @@ func (m Model) renderSidebar(width, height int) string {
 				marker = ">"
 			}
 			total := len(it.Folder.Requests) + len(it.Folder.Folders)
-			lineContent = fmt.Sprintf("%s%s [%s] %s", indent, fStyle.Render(marker), it.Folder.Name, subtext.Render(fmt.Sprintf("(%d)", total)))
+			fName := it.Folder.Name
+			countStr := fmt.Sprintf(" (%d)", total)
+			prefixLen := len(indent) + 2 + 1 // indent + "v " + "["
+			suffixLen := 1 + len(countStr)   // "]" + countStr
+			avail := innerW - prefixLen - suffixLen
+			if avail < 0 {
+				avail = 0
+			}
+			if len(fName) > avail {
+				if avail > 1 {
+					fName = fName[:avail-1] + "…"
+				} else {
+					fName = fName[:avail]
+				}
+			}
+
+			if isSelected {
+				mStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(m.Theme.Accent)).Background(lipgloss.Color(m.Theme.Selection)).Bold(true)
+				sStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(m.Theme.Subtext)).Background(lipgloss.Color(m.Theme.Selection))
+				lineContent = fmt.Sprintf("%s%s [%s]%s", indent, mStyle.Render(marker), fName, sStyle.Render(countStr))
+			} else {
+				lineContent = fmt.Sprintf("%s%s [%s]%s", indent, fStyle.Render(marker), fName, subtext.Render(countStr))
+			}
 		} else {
 			req := it.Request
 			badgeColor := theme.MethodColor(string(req.Method), m.Theme)
-			badge := lipgloss.NewStyle().Foreground(badgeColor).Bold(true).Render(fmt.Sprintf("%-4s", req.Method))
+			badgeText := fmt.Sprintf("%-4s", req.Method)
 			name := req.Name
+			modIndicator := ""
 			if m.ModifiedRequests[req.ID] {
-				name += " *"
+				modIndicator = " *"
 			}
-			lineContent = fmt.Sprintf("%s%s %s", indent, badge, name)
+			prefixLen := len(indent) + 4 + 1
+			avail := innerW - prefixLen - len(modIndicator)
+			if avail < 0 {
+				avail = 0
+			}
+			if len(name) > avail {
+				if avail > 1 {
+					name = name[:avail-1] + "…"
+				} else {
+					name = name[:avail]
+				}
+			}
+
+			if isSelected {
+				badge := lipgloss.NewStyle().
+					Foreground(badgeColor).
+					Background(lipgloss.Color(m.Theme.Selection)).
+					Bold(true).
+					Render(badgeText)
+				lineContent = fmt.Sprintf("%s%s %s%s", indent, badge, name, modIndicator)
+			} else {
+				badge := lipgloss.NewStyle().
+					Foreground(badgeColor).
+					Bold(true).
+					Render(badgeText)
+				lineContent = fmt.Sprintf("%s%s %s%s", indent, badge, name, modIndicator)
+			}
 		}
 
 		if isSelected {
 			selStyle := lipgloss.NewStyle().
 				Width(innerW).
 				MaxWidth(innerW).
+				Height(1).
+				MaxHeight(1).
 				Background(lipgloss.Color(m.Theme.Selection)).
 				Foreground(lipgloss.Color(m.Theme.SelectionFg)).
 				Bold(true)
@@ -911,6 +1095,8 @@ func (m Model) renderSidebar(width, height int) string {
 			normStyle := lipgloss.NewStyle().
 				Width(innerW).
 				MaxWidth(innerW).
+				Height(1).
+				MaxHeight(1).
 				Foreground(lipgloss.Color(m.Theme.Fg))
 			lines = append(lines, normStyle.Render(lineContent))
 		}
@@ -1200,4 +1386,199 @@ func highlightVariables(text string, t theme.Theme) string {
 	return varRegex.ReplaceAllStringFunc(text, func(m string) string {
 		return peach.Render(m)
 	})
+}
+
+func (m Model) renderEnvironmentModal() string {
+	modalW := m.Width * 75 / 100
+	if modalW < 54 {
+		modalW = 54
+	}
+	if modalW > 95 {
+		modalW = 95
+	}
+	modalH := m.Height * 65 / 100
+	if modalH < 14 {
+		modalH = 14
+	}
+	if modalH > 26 {
+		modalH = 26
+	}
+
+	innerW := modalW - 2
+	innerH := modalH - 2
+
+	accent := lipgloss.NewStyle().Foreground(lipgloss.Color(m.Theme.Accent)).Bold(true)
+	subtext := lipgloss.NewStyle().Foreground(lipgloss.Color(m.Theme.Subtext))
+	activeStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(m.Theme.Success)).Bold(true)
+	closeStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(m.Theme.Delete)).Bold(true)
+
+	activeName := m.Coll.ActiveEnvironment
+	if activeName == "" {
+		activeName = "None"
+	}
+	titleLeft := fmt.Sprintf(" %s  %s %s", accent.Render("ENVIRONMENT & VARIABLES MANAGER"), subtext.Render("Active:"), activeStyle.Render("["+activeName+"]"))
+	closeBtn := closeStyle.Render("[Esc Close]")
+	titleSpace := innerW - lipgloss.Width(titleLeft) - lipgloss.Width(closeBtn) - 1
+	if titleSpace < 1 {
+		titleSpace = 1
+	}
+	row0 := titleLeft + strings.Repeat(" ", titleSpace) + closeBtn
+
+	row1 := lipgloss.NewStyle().Foreground(lipgloss.Color(m.Theme.Border)).Render(strings.Repeat("─", innerW))
+
+	leftW := innerW * 35 / 100
+	if leftW < 18 {
+		leftW = 18
+	}
+	rightW := innerW - leftW - 1
+
+	contentH := innerH - 3
+	if contentH < 1 {
+		contentH = 1
+	}
+
+	type envItem struct {
+		Name     string
+		IsActive bool
+		Env      *bru.BrunoEnvironment
+	}
+	var items []envItem
+	items = append(items, envItem{Name: "No Environment", IsActive: (m.Coll.ActiveEnvironment == ""), Env: nil})
+	for _, env := range m.Coll.Environments {
+		items = append(items, envItem{Name: env.Name, IsActive: (m.Coll.ActiveEnvironment == env.Name), Env: env})
+	}
+
+	var leftLines []string
+	for r := 0; r < contentH; r++ {
+		if r < len(items) {
+			it := items[r]
+			activeTag := ""
+			if it.IsActive {
+				activeTag = " " + activeStyle.Render("[Active]")
+			}
+			label := it.Name
+			maxLabel := leftW - len(activeTag) - 2
+			if maxLabel < 1 {
+				maxLabel = 1
+			}
+			if len(label) > maxLabel {
+				label = label[:maxLabel-1] + "…"
+			}
+			rowText := " " + label + activeTag
+
+			if r == m.EnvModalSelectedIdx {
+				sel := lipgloss.NewStyle().
+					Width(leftW).
+					MaxWidth(leftW).
+					Height(1).
+					MaxHeight(1).
+					Background(lipgloss.Color(m.Theme.Selection)).
+					Foreground(lipgloss.Color(m.Theme.SelectionFg)).
+					Bold(true)
+				leftLines = append(leftLines, sel.Render(rowText))
+			} else {
+				norm := lipgloss.NewStyle().
+					Width(leftW).
+					MaxWidth(leftW).
+					Height(1).
+					MaxHeight(1).
+					Foreground(lipgloss.Color(m.Theme.Fg))
+				leftLines = append(leftLines, norm.Render(rowText))
+			}
+		} else {
+			leftLines = append(leftLines, strings.Repeat(" ", leftW))
+		}
+	}
+
+	var rightLines []string
+	var selectedEnv *bru.BrunoEnvironment
+	if m.EnvModalSelectedIdx > 0 && m.EnvModalSelectedIdx <= len(m.Coll.Environments) {
+		selectedEnv = m.Coll.Environments[m.EnvModalSelectedIdx-1]
+	}
+
+	if selectedEnv == nil {
+		rightLines = append(rightLines, subtext.Render(" (No environment active - variables disabled)"))
+	} else {
+		rightLines = append(rightLines, accent.Render(fmt.Sprintf(" Variables in [%s] (%d):", selectedEnv.Name, len(selectedEnv.Variables))))
+		var varKeys []string
+		for k := range selectedEnv.Variables {
+			varKeys = append(varKeys, k)
+		}
+		sort.Strings(varKeys)
+		for _, k := range varKeys {
+			val := selectedEnv.Variables[k]
+			line := fmt.Sprintf(" %s: %s", lipgloss.NewStyle().Bold(true).Render(k), subtext.Render(val))
+			if lipgloss.Width(line) > rightW {
+				maxVal := rightW - len(k) - 4
+				if maxVal > 3 {
+					val = val[:maxVal-1] + "…"
+				}
+				line = fmt.Sprintf(" %s: %s", lipgloss.NewStyle().Bold(true).Render(k), subtext.Render(val))
+			}
+			rightLines = append(rightLines, line)
+		}
+	}
+
+	var finalRightLines []string
+	for r := 0; r < contentH; r++ {
+		if r < len(rightLines) {
+			finalRightLines = append(finalRightLines, lipgloss.NewStyle().Width(rightW).MaxWidth(rightW).Height(1).MaxHeight(1).Render(rightLines[r]))
+		} else {
+			finalRightLines = append(finalRightLines, strings.Repeat(" ", rightW))
+		}
+	}
+
+	sepCol := lipgloss.NewStyle().Foreground(lipgloss.Color(m.Theme.Border)).Render("│")
+	var middleRows []string
+	for r := 0; r < contentH; r++ {
+		middleRows = append(middleRows, leftLines[r]+sepCol+finalRightLines[r])
+	}
+
+	footer := subtext.Render(" [↑/↓] Navigate   [Enter/Space] Activate Environment   [Esc] Close")
+	footerLine := lipgloss.NewStyle().Width(innerW).Render(" " + footer)
+
+	allModalRows := []string{row0, row1}
+	allModalRows = append(allModalRows, middleRows...)
+	allModalRows = append(allModalRows, footerLine)
+
+	modalBoxStyle := lipgloss.NewStyle().
+		Width(modalW).
+		MaxWidth(modalW).
+		Height(modalH).
+		MaxHeight(modalH).
+		BorderStyle(lipgloss.RoundedBorder()).
+		BorderForeground(lipgloss.Color(m.Theme.Accent)).
+		Background(lipgloss.Color("#181825"))
+
+	return modalBoxStyle.Render(strings.Join(allModalRows, "\n"))
+}
+
+func overlayModal(base string, modal string, screenW, screenH int) string {
+	baseLines := strings.Split(base, "\n")
+	modalLines := strings.Split(modal, "\n")
+
+	modalH := len(modalLines)
+	modalW := lipgloss.Width(modalLines[0])
+
+	startRow := (screenH - modalH) / 2
+	startCol := (screenW - modalW) / 2
+	if startRow < 0 {
+		startRow = 0
+	}
+	if startCol < 0 {
+		startCol = 0
+	}
+
+	for r := 0; r < modalH && startRow+r < len(baseLines); r++ {
+		mLine := modalLines[r]
+		padLeft := strings.Repeat(" ", startCol)
+		padRight := ""
+		remain := screenW - startCol - modalW
+		if remain > 0 {
+			padRight = strings.Repeat(" ", remain)
+		}
+		baseLines[startRow+r] = padLeft + mLine + padRight
+	}
+
+	return strings.Join(baseLines, "\n")
 }

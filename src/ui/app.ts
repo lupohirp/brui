@@ -488,7 +488,8 @@ export class BruiApp {
       const before = escapeTags(raw.slice(0, c));
       const atChar = c < raw.length ? escapeTags(raw[c]) : ' ';
       const after = c < raw.length ? escapeTags(raw.slice(c + 1)) : '';
-      return `${before}{inverse}${atChar}{/inverse}${after}`;
+      const cursorBlock = `{bold}{${t.selectionFg}-fg}{${t.accent}-bg}${atChar}{/}`;
+      return `${before}${cursorBlock}${after}`;
     };
 
     const urlDisplay = renderSingleLineWithCursor(
@@ -572,7 +573,8 @@ export class BruiApp {
           const emptyHint = line.length === 0 && lines.length === 1
             ? `  {${t.subtext}-fg}(type ${escapeTags(placeholder.replace(/\n/g, ' '))}){/}`
             : '';
-          lineBody = `${before}{inverse}${atChar}{/inverse}${after}${emptyHint}`;
+          const cursorBlock = `{bold}{${t.selectionFg}-fg}{${t.accent}-bg}${atChar}{/}`;
+          lineBody = `${before}${cursorBlock}${after}${emptyHint}`;
         } else {
           lineBody = Interpolator.highlightVariables(line, this.collection, t.accent, t.delete);
         }
@@ -1220,12 +1222,15 @@ export class BruiApp {
       const relY = data.y - pos.yi;
 
       if (relY === 0) {
-        const methodBtnLen = this.selectedRequest.method.length + 5;
+        // Line 1: " [ METHOD ]  <URL>"
+        // Prefix is: ' ' (1) + '[' (1) + ' ' (1) + method + ' ' (1) + ']' (1) + '  ' (2) = method.length + 6
+        const methodBtnLen = this.selectedRequest.method.length + 4;
         if (relX <= methodBtnLen) {
           this.cycleActiveRequestMethod();
           return;
         }
-        const urlCol = Math.max(0, relX - (methodBtnLen + 2));
+        const urlPrefixLen = this.selectedRequest.method.length + 6;
+        const urlCol = Math.max(0, relX - urlPrefixLen);
         this.activateInlineEdit('url', 0, urlCol);
       } else if (relY === 1) {
         // Line 2: " [Send]  [Save .bru (Ctrl+S)]  [Revert]"

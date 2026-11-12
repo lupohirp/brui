@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"os"
 	"strings"
 	"testing"
 
@@ -451,3 +452,254 @@ func TestBoxOuterDimensionsWithBorders(t *testing.T) {
 		}
 	}
 }
+
+func TestTabContentEditingHeadersAndBody(t *testing.T) {
+	req := &bru.BrunoRequest{
+		ID:       "req1",
+		Name:     "Test Request",
+		Method:   bru.MethodGet,
+		URL:      "https://example.com/api",
+		BodyType: "json",
+		Headers: []bru.BruHeader{
+			{Name: "Accept", Value: "application/json", Enabled: true},
+		},
+		BodyContent: `{"foo": "bar"}`,
+	}
+	coll := &bru.BrunoCollection{
+		Name:     "TestColl",
+		Requests: []*bru.BrunoRequest{req},
+	}
+	m := NewModel(coll)
+	m.Width = 100
+	m.Height = 30
+	m.ActiveTab = "headers"
+
+	// 1. Enter editing mode with 'I'
+	newM, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'i'}})
+	m = newM.(Model)
+	if !m.IsEditingContent {
+		t.Fatalf("Expected IsEditingContent to be true after pressing 'i'")
+	}
+	if !strings.Contains(m.ContentEditText, "Accept: application/json") {
+		t.Fatalf("Expected ContentEditText to have header line, got %q", m.ContentEditText)
+	}
+
+	// 2. Add a new header line
+	newM, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = newM.(Model)
+	for _, ch := range "X-Custom: 123" {
+		newM, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{ch}})
+		m = newM.(Model)
+	}
+
+	// 3. Exit edit mode with Esc
+	newM, _ = m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	m = newM.(Model)
+	if m.IsEditingContent {
+		t.Fatalf("Expected IsEditingContent to be false after Esc")
+	}
+	if len(req.Headers) != 2 {
+		t.Fatalf("Expected 2 headers, got %d", len(req.Headers))
+	}
+	if req.Headers[1].Name != "X-Custom" || req.Headers[1].Value != "123" {
+		t.Errorf("Header 1 mismatch: %+v", req.Headers[1])
+	}
+
+	// 4. Test Body editing
+	m.ActiveTab = "body"
+	newM, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'i'}})
+	m = newM.(Model)
+	if !m.IsEditingContent {
+		t.Fatalf("Expected IsEditingContent to be true for body")
+	}
+	// Append extra JSON field
+	for _, ch := range ` // modified` {
+		newM, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{ch}})
+		m = newM.(Model)
+	}
+	newM, _ = m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	m = newM.(Model)
+	if !strings.Contains(req.BodyContent, "// modified") {
+		t.Errorf("Expected body to be modified, got %q", req.BodyContent)
+	}
+}
+
+func TestCreateNewRequest(t *testing.T) {
+	tempDir, err := os.MkdirTemp("", "brui-test-create-req-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(tempDir)
+
+	coll := &bru.BrunoCollection{
+		Name:     "TestColl",
+		Path:     tempDir,
+		Requests: []*bru.BrunoRequest{},
+	}
+	m := NewModel(coll)
+	m.Width = 100
+	m.Height = 30
+
+	// 1. Open New Request modal with 'N'
+	newM, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'n'}})
+	m = newM.(Model)
+	if !m.IsNewReqPromptOpen {
+		t.Fatalf("Expected IsNewReqPromptOpen to be true")
+	}
+	if m.NewReqStep != 0 {
+		t.Fatalf("Expected step 0, got %d", m.NewReqStep)
+	}
+
+	// Type request name: "User Details"
+	for _, ch := range "User Details" {
+		newM, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{ch}})
+		m = newM.(Model)
+	}
+	if m.NewReqName != "User Details" {
+		t.Errorf("Expected name 'User Details', got %q", m.NewReqName)
+	}
+
+	// Tab to Step 1 (Method)
+	newM, _ = m.Update(tea.KeyMsg{Type: tea.KeyTab})
+	m = newM.(Model)
+	if m.NewReqStep != 1 {
+		t.Fatalf("Expected step 1, got %d", m.NewReqStep)
+	}
+
+	// Press right arrow to cycle to POST
+	newM, _ = m.Update(tea.KeyMsg{Type: tea.KeyRight})
+	m = newM.(Model)
+	if m.NewReqMethod != bru.MethodPost {
+		t.Errorf("Expected POST method, got %s", m.NewReqMethod)
+	}
+
+	// Tab to Step 2 (URL)
+	newM, _ = m.Update(tea.KeyMsg{Type: tea.KeyTab})
+	m = newM.(Model)
+	if m.NewReqStep != 2 {
+		t.Fatalf("Expected step 2, got %d", m.NewReqStep)
+	}
+
+	// Type URL
+	for _, ch := range "api/users" {
+		newM, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{ch}})
+		m = newM.(Model)
+	}
+
+	// Enter on step 2 submits and creates request
+	newM, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = newM.(Model)
+	if m.IsNewReqPromptOpen {
+		t.Fatalf("Expected prompt to close after creation")
+	}
+
+	if len(coll.Requests) != 1 {
+		t.Fatalf("Expected 1 request in collection, got %d", len(coll.Requests))
+	}
+	created := coll.Requests[0]
+	if created.Name != "User Details" || created.Method != bru.MethodPost {
+		t.Errorf("Created request mismatch: %+v", created)
+	}
+	if _, err := os.Stat(created.FilePath); os.IsNotExist(err) {
+		t.Errorf("Expected request file %s to exist on disk", created.FilePath)
+	}
+}
+
+func TestEnvironmentAndVariableEditing(t *testing.T) {
+	tempDir, err := os.MkdirTemp("", "brui-test-env-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(tempDir)
+
+	env1 := &bru.BrunoEnvironment{
+		Name: "DEV",
+		Variables: map[string]string{
+			"BASE_URL": "http://dev.example.com",
+			"TOKEN":    "secret123",
+		},
+	}
+	coll := &bru.BrunoCollection{
+		Name:              "TestColl",
+		Path:              tempDir,
+		Environments:      []*bru.BrunoEnvironment{env1},
+		ActiveEnvironment: "DEV",
+	}
+	m := NewModel(coll)
+	m.Width = 100
+	m.Height = 30
+
+	// 1. Open Env Modal with 'E'
+	newM, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'e'}})
+	m = newM.(Model)
+	if !m.IsEnvModalOpen {
+		t.Fatalf("Expected IsEnvModalOpen to be true")
+	}
+	if m.EnvModalFocusPane != "envs" {
+		t.Fatalf("Expected focus on envs")
+	}
+
+	// 2. Tab to switch focus to variables
+	newM, _ = m.Update(tea.KeyMsg{Type: tea.KeyTab})
+	m = newM.(Model)
+	if m.EnvModalFocusPane != "vars" {
+		t.Fatalf("Expected focus on vars")
+	}
+
+	// 3. Press Enter to edit the first variable
+	newM, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = newM.(Model)
+	if !m.IsEnvPromptOpen {
+		t.Fatalf("Expected IsEnvPromptOpen to be true")
+	}
+	if m.EnvPromptTempKey != "BASE_URL" {
+		t.Fatalf("Expected variable BASE_URL, got %q", m.EnvPromptTempKey)
+	}
+
+	// Modify value: add "/v2"
+	for _, ch := range "/v2" {
+		newM, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{ch}})
+		m = newM.(Model)
+	}
+	newM, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = newM.(Model)
+	if m.IsEnvPromptOpen {
+		t.Fatalf("Expected prompt to close")
+	}
+	if env1.Variables["BASE_URL"] != "http://dev.example.com/v2" {
+		t.Errorf("Expected updated BASE_URL, got %q", env1.Variables["BASE_URL"])
+	}
+
+	// 4. Add new variable with 'N' while focused on vars
+	newM, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'n'}})
+	m = newM.(Model)
+	if !m.IsEnvPromptOpen || m.EnvPromptAction != "new_var_name" {
+		t.Fatalf("Expected prompt for new_var_name")
+	}
+	for _, ch := range "NEW_KEY" {
+		newM, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{ch}})
+		m = newM.(Model)
+	}
+	newM, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = newM.(Model)
+	if !m.IsEnvPromptOpen || m.EnvPromptAction != "new_var_val" {
+		t.Fatalf("Expected prompt for new_var_val")
+	}
+	for _, ch := range "new_value" {
+		newM, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{ch}})
+		m = newM.(Model)
+	}
+	newM, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = newM.(Model)
+	if env1.Variables["NEW_KEY"] != "new_value" {
+		t.Errorf("Expected NEW_KEY in env, got %v", env1.Variables)
+	}
+
+	// 5. Delete variable with 'D'
+	newM, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'d'}})
+	m = newM.(Model)
+	if len(env1.Variables) != 2 {
+		t.Errorf("Expected 2 variables after delete, got %d", len(env1.Variables))
+	}
+}
+

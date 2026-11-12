@@ -242,3 +242,19 @@ func SerializeCollectionBru(coll *BrunoCollection) string {
 
 	return sb.String()
 }
+
+func SerializeEnvironment(env *BrunoEnvironment) string {
+	var sb strings.Builder
+	sb.WriteString("vars {\n")
+	var keys []string
+	for k := range env.Variables {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	for _, k := range keys {
+		sb.WriteString(fmt.Sprintf("  %s: %s\n", k, env.Variables[k]))
+	}
+	sb.WriteString("}\n")
+	return sb.String()
+}
+

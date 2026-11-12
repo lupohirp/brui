@@ -53,6 +53,12 @@ type Model struct {
 	URLEditText  string
 	URLCursor    int
 
+	// Inline Tab Content Edit
+	IsEditingContent bool
+	ContentEditText  string
+	ContentCursor    int
+	ContentScroll    int
+
 	// Autocomplete state
 	ACCandidates  []AutocompleteCandidate
 	ACSelectedIdx int
@@ -62,6 +68,21 @@ type Model struct {
 	// Environment Modal
 	IsEnvModalOpen      bool
 	EnvModalSelectedIdx int
+	EnvModalFocusPane   string // "envs" or "vars"
+	EnvModalVarIdx      int
+	IsEnvPromptOpen     bool
+	EnvPromptTitle      string
+	EnvPromptText       string
+	EnvPromptCursor     int
+	EnvPromptAction     string // "edit_var", "new_var_name", "new_var_val", "new_env"
+	EnvPromptTempKey    string
+
+	// New Request Prompt
+	IsNewReqPromptOpen bool
+	NewReqName         string
+	NewReqMethod       bru.HttpMethod
+	NewReqURL          string
+	NewReqStep         int // 0: Name, 1: URL
 
 	// Scrolling
 	RespScroll int
@@ -70,14 +91,15 @@ type Model struct {
 
 func NewModel(coll *bru.BrunoCollection) Model {
 	m := Model{
-		Coll:             coll,
-		Theme:            theme.Mocha,
-		ActiveTab:        "headers",
-		ActiveRespTab:    "body",
-		ScriptRunner:     bru.NewScriptRunner(coll),
-		StatusMsg:        "Ready",
-		ExpandedFolders:  make(map[string]bool),
-		ModifiedRequests: make(map[string]bool),
+		Coll:              coll,
+		Theme:             theme.Mocha,
+		ActiveTab:         "headers",
+		ActiveRespTab:     "body",
+		ScriptRunner:      bru.NewScriptRunner(coll),
+		StatusMsg:         "Ready",
+		ExpandedFolders:   make(map[string]bool),
+		ModifiedRequests:  make(map[string]bool),
+		EnvModalFocusPane: "envs",
 	}
 
 	// Expand all folders by default
@@ -180,11 +202,20 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case tea.KeyMsg:
+		if m.IsNewReqPromptOpen {
+			return m.handleNewReqKeys(msg)
+		}
+		if m.IsEnvPromptOpen {
+			return m.handleEnvPromptKeys(msg)
+		}
 		if m.IsEnvModalOpen {
 			return m.handleEnvModalKeys(msg)
 		}
 		if m.IsEditingURL {
 			return m.handleURLEditKeys(msg)
+		}
+		if m.IsEditingContent {
+			return m.handleContentEditKeys(msg)
 		}
 		return m.handleNormalKeys(msg)
 
@@ -351,6 +382,15 @@ func (m *Model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 				} else {
 					m.ActiveTab = "docs"
 				}
+				if m.IsEditingContent {
+					m.startEditingContent()
+				}
+				return *m, nil
+			}
+
+			// Rows >= 8: Content area click to edit
+			if msg.Y >= 8 && m.SelectedRequest != nil {
+				m.startEditingContent()
 				return *m, nil
 			}
 
@@ -386,7 +426,7 @@ func (m *Model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 			}
 
 			// Shortcuts:
-			// " [Space] Send   [U] Edit URL   [E] Env   [M] Method   [1-5] Tabs   [S] Save   [q] Quit"
+			// " [Space] Send   [U] Edit URL   [E] Env   [I] Edit Tab   [N] New Req   [M] Method   [S] Save   [q] Quit"
 			if msg.X >= 1 && msg.X <= 15 {
 				m.executeCurrentRequest()
 			} else if msg.X >= 16 && msg.X <= 29 {
@@ -398,25 +438,22 @@ func (m *Model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 				}
 			} else if msg.X >= 30 && msg.X <= 39 {
 				m.openEnvironmentModal()
-			} else if msg.X >= 40 && msg.X <= 53 {
-				m.cycleMethod()
-			} else if msg.X >= 54 && msg.X <= 66 {
-				tabs := []string{"headers", "params", "body", "auth", "docs"}
-				curIdx := 0
-				for i, t := range tabs {
-					if t == m.ActiveTab {
-						curIdx = i
-						break
-					}
+			} else if msg.X >= 40 && msg.X <= 54 {
+				if m.SelectedRequest != nil {
+					m.startEditingContent()
 				}
-				m.ActiveTab = tabs[(curIdx+1)%len(tabs)]
-			} else if msg.X >= 67 && msg.X <= 78 {
+			} else if msg.X >= 55 && msg.X <= 67 {
+				m.openNewRequestPrompt()
+			} else if msg.X >= 68 && msg.X <= 79 {
+				m.cycleMethod()
+			} else if msg.X >= 80 && msg.X <= 90 {
 				_ = m.saveCurrentRequest()
-			} else if msg.X >= 79 {
+			} else if msg.X >= 91 {
 				return *m, tea.Quit
 			}
 			return *m, nil
 		}
+
 	}
 
 	return *m, nil
@@ -517,6 +554,281 @@ func (m *Model) handleURLEditKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return *m, nil
 }
 
+func (m *Model) startEditingContent() {
+	if m.SelectedRequest == nil {
+		return
+	}
+	m.IsEditingContent = true
+	m.IsEditingURL = false
+	m.ACCandidates = nil
+
+	req := m.SelectedRequest
+	switch m.ActiveTab {
+	case "headers":
+		var lines []string
+		for _, h := range req.Headers {
+			if h.Enabled {
+				lines = append(lines, fmt.Sprintf("%s: %s", h.Name, h.Value))
+			} else {
+				lines = append(lines, fmt.Sprintf("# %s: %s", h.Name, h.Value))
+			}
+		}
+		m.ContentEditText = strings.Join(lines, "\n")
+	case "params":
+		var lines []string
+		for _, p := range req.Params {
+			if p.Enabled {
+				lines = append(lines, fmt.Sprintf("%s = %s", p.Name, p.Value))
+			} else {
+				lines = append(lines, fmt.Sprintf("# %s = %s", p.Name, p.Value))
+			}
+		}
+		m.ContentEditText = strings.Join(lines, "\n")
+	case "body":
+		m.ContentEditText = req.BodyContent
+	case "auth":
+		m.ContentEditText = req.AuthBearerToken
+	case "docs":
+		m.ContentEditText = req.Docs
+	default:
+		m.ContentEditText = ""
+	}
+	m.ContentCursor = len(m.ContentEditText)
+	m.ContentScroll = 0
+	m.StatusMsg = fmt.Sprintf("Editing %s. [Esc] Done  [Ctrl+S] Save  [Enter] Newline", m.ActiveTab)
+}
+
+func (m *Model) saveTabContent() {
+	if m.SelectedRequest == nil {
+		return
+	}
+	req := m.SelectedRequest
+	switch m.ActiveTab {
+	case "headers":
+		var newHeaders []bru.BruHeader
+		lines := strings.Split(m.ContentEditText, "\n")
+		for _, l := range lines {
+			trimmed := strings.TrimSpace(l)
+			if trimmed == "" {
+				continue
+			}
+			enabled := true
+			if strings.HasPrefix(trimmed, "#") {
+				enabled = false
+				trimmed = strings.TrimSpace(strings.TrimPrefix(trimmed, "#"))
+			}
+			idx := strings.Index(trimmed, ":")
+			if idx > 0 {
+				name := strings.TrimSpace(trimmed[:idx])
+				val := strings.TrimSpace(trimmed[idx+1:])
+				newHeaders = append(newHeaders, bru.BruHeader{
+					Name:    name,
+					Value:   val,
+					Enabled: enabled,
+				})
+			}
+		}
+		req.Headers = newHeaders
+		m.ModifiedRequests[req.ID] = true
+
+	case "params":
+		var newParams []bru.BruParam
+		lines := strings.Split(m.ContentEditText, "\n")
+		for _, l := range lines {
+			trimmed := strings.TrimSpace(l)
+			if trimmed == "" {
+				continue
+			}
+			enabled := true
+			if strings.HasPrefix(trimmed, "#") {
+				enabled = false
+				trimmed = strings.TrimSpace(strings.TrimPrefix(trimmed, "#"))
+			}
+			idx := strings.Index(trimmed, "=")
+			if idx > 0 {
+				name := strings.TrimSpace(trimmed[:idx])
+				val := strings.TrimSpace(trimmed[idx+1:])
+				newParams = append(newParams, bru.BruParam{
+					Name:    name,
+					Value:   val,
+					Enabled: enabled,
+				})
+			}
+		}
+		req.Params = newParams
+		m.ModifiedRequests[req.ID] = true
+
+	case "body":
+		req.BodyContent = m.ContentEditText
+		m.ModifiedRequests[req.ID] = true
+
+	case "auth":
+		req.AuthBearerToken = m.ContentEditText
+		m.ModifiedRequests[req.ID] = true
+
+	case "docs":
+		req.Docs = m.ContentEditText
+		m.ModifiedRequests[req.ID] = true
+	}
+}
+
+func (m *Model) moveContentCursorUp() {
+	if m.ContentCursor == 0 {
+		return
+	}
+	text := m.ContentEditText
+	cur := m.ContentCursor
+	lineStart := strings.LastIndex(text[:cur], "\n")
+	col := cur
+	if lineStart != -1 {
+		col = cur - (lineStart + 1)
+	}
+	if lineStart <= 0 {
+		m.ContentCursor = 0
+		return
+	}
+	prevLineEnd := lineStart
+	prevLineStart := strings.LastIndex(text[:prevLineEnd], "\n")
+	var prevLineLen int
+	if prevLineStart == -1 {
+		prevLineStart = 0
+		prevLineLen = prevLineEnd
+	} else {
+		prevLineStart = prevLineStart + 1
+		prevLineLen = prevLineEnd - prevLineStart
+	}
+	targetCol := col
+	if targetCol > prevLineLen {
+		targetCol = prevLineLen
+	}
+	m.ContentCursor = prevLineStart + targetCol
+}
+
+func (m *Model) moveContentCursorDown() {
+	text := m.ContentEditText
+	cur := m.ContentCursor
+	if cur >= len(text) {
+		return
+	}
+	lineStart := strings.LastIndex(text[:cur], "\n")
+	col := cur
+	if lineStart != -1 {
+		col = cur - (lineStart + 1)
+	}
+	nextNL := strings.Index(text[cur:], "\n")
+	if nextNL == -1 {
+		m.ContentCursor = len(text)
+		return
+	}
+	nextLineStart := cur + nextNL + 1
+	nextNextNL := strings.Index(text[nextLineStart:], "\n")
+	var nextLineLen int
+	if nextNextNL == -1 {
+		nextLineLen = len(text) - nextLineStart
+	} else {
+		nextLineLen = nextNextNL
+	}
+	targetCol := col
+	if targetCol > nextLineLen {
+		targetCol = nextLineLen
+	}
+	m.ContentCursor = nextLineStart + targetCol
+}
+
+func (m *Model) handleContentEditKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.Type {
+	case tea.KeyEsc:
+		m.saveTabContent()
+		m.IsEditingContent = false
+		m.StatusMsg = fmt.Sprintf("Finished editing %s. Press [S] to save to disk.", m.ActiveTab)
+		return *m, nil
+
+	case tea.KeyCtrlS:
+		m.saveTabContent()
+		_ = m.saveCurrentRequest()
+		return *m, nil
+
+	case tea.KeyEnter:
+		m.ContentEditText = m.ContentEditText[:m.ContentCursor] + "\n" + m.ContentEditText[m.ContentCursor:]
+		m.ContentCursor++
+		m.saveTabContent()
+		return *m, nil
+
+	case tea.KeyBackspace:
+		if m.ContentCursor > 0 && len(m.ContentEditText) > 0 {
+			m.ContentEditText = m.ContentEditText[:m.ContentCursor-1] + m.ContentEditText[m.ContentCursor:]
+			m.ContentCursor--
+			m.saveTabContent()
+		}
+		return *m, nil
+
+	case tea.KeyDelete:
+		if m.ContentCursor < len(m.ContentEditText) {
+			m.ContentEditText = m.ContentEditText[:m.ContentCursor] + m.ContentEditText[m.ContentCursor+1:]
+			m.saveTabContent()
+		}
+		return *m, nil
+
+	case tea.KeyLeft:
+		if m.ContentCursor > 0 {
+			m.ContentCursor--
+		}
+		return *m, nil
+
+	case tea.KeyRight:
+		if m.ContentCursor < len(m.ContentEditText) {
+			m.ContentCursor++
+		}
+		return *m, nil
+
+	case tea.KeyUp:
+		m.moveContentCursorUp()
+		return *m, nil
+
+	case tea.KeyDown:
+		m.moveContentCursorDown()
+		return *m, nil
+
+	case tea.KeyHome, tea.KeyCtrlA:
+		text := m.ContentEditText
+		cur := m.ContentCursor
+		lineStart := strings.LastIndex(text[:cur], "\n")
+		if lineStart == -1 {
+			m.ContentCursor = 0
+		} else {
+			m.ContentCursor = lineStart + 1
+		}
+		return *m, nil
+
+	case tea.KeyEnd, tea.KeyCtrlE:
+		text := m.ContentEditText
+		cur := m.ContentCursor
+		nextNL := strings.Index(text[cur:], "\n")
+		if nextNL == -1 {
+			m.ContentCursor = len(text)
+		} else {
+			m.ContentCursor = cur + nextNL
+		}
+		return *m, nil
+
+	case tea.KeyTab:
+		indent := "  "
+		m.ContentEditText = m.ContentEditText[:m.ContentCursor] + indent + m.ContentEditText[m.ContentCursor:]
+		m.ContentCursor += len(indent)
+		m.saveTabContent()
+		return *m, nil
+
+	case tea.KeyRunes:
+		ch := string(msg.Runes)
+		m.ContentEditText = m.ContentEditText[:m.ContentCursor] + ch + m.ContentEditText[m.ContentCursor:]
+		m.ContentCursor += len(ch)
+		m.saveTabContent()
+		return *m, nil
+	}
+
+	return *m, nil
+}
+
 func (m *Model) handleNormalKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "q", "ctrl+c":
@@ -564,6 +876,14 @@ func (m *Model) handleNormalKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	case "s", "S":
 		_ = m.saveCurrentRequest()
+
+	case "i", "I":
+		if m.SelectedRequest != nil {
+			m.startEditingContent()
+		}
+
+	case "n", "N", "ctrl+n":
+		m.openNewRequestPrompt()
 
 	case "1":
 		m.ActiveTab = "headers"
@@ -646,6 +966,8 @@ func (m *Model) cycleEnvironment() {
 
 func (m *Model) openEnvironmentModal() {
 	m.IsEnvModalOpen = true
+	m.EnvModalFocusPane = "envs"
+	m.EnvModalVarIdx = 0
 	idx := 0
 	for i, env := range m.Coll.Environments {
 		if env.Name == m.Coll.ActiveEnvironment {
@@ -654,7 +976,46 @@ func (m *Model) openEnvironmentModal() {
 		}
 	}
 	m.EnvModalSelectedIdx = idx
-	m.StatusMsg = "Environment Manager open. [↑/↓] Select   [Enter] Activate   [Esc] Close"
+	m.StatusMsg = "Environment Manager open. [Tab] Focus Vars  [↑/↓] Select  [Enter] Activate  [Esc] Close"
+}
+
+func (m *Model) getSelectedEnv() *bru.BrunoEnvironment {
+	if m.EnvModalSelectedIdx > 0 && m.EnvModalSelectedIdx <= len(m.Coll.Environments) {
+		return m.Coll.Environments[m.EnvModalSelectedIdx-1]
+	}
+	return nil
+}
+
+func (m *Model) getSelectedEnvVarKeys() []string {
+	env := m.getSelectedEnv()
+	if env == nil {
+		return nil
+	}
+	var keys []string
+	for k := range env.Variables {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
+}
+
+func (m *Model) saveEnvironment(env *bru.BrunoEnvironment) error {
+	if env == nil {
+		return nil
+	}
+	if env.FilePath == "" {
+		envDir := filepath.Join(m.Coll.Path, "environments")
+		_ = os.MkdirAll(envDir, 0755)
+		env.FilePath = filepath.Join(envDir, env.Name+".bru")
+	}
+	raw := bru.SerializeEnvironment(env)
+	err := os.WriteFile(env.FilePath, []byte(raw), 0644)
+	if err != nil {
+		m.StatusMsg = fmt.Sprintf("Failed to save env %s: %v", env.Name, err)
+		return err
+	}
+	m.StatusMsg = fmt.Sprintf("Saved environment: %s", filepath.Base(env.FilePath))
+	return nil
 }
 
 func (m *Model) handleEnvModalKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
@@ -662,30 +1023,226 @@ func (m *Model) handleEnvModalKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	switch msg.String() {
 	case "esc", "q", "ctrl+c":
+		if m.EnvModalFocusPane == "vars" {
+			m.EnvModalFocusPane = "envs"
+			m.StatusMsg = "Focused on Environments. [↑/↓] Select  [Enter] Activate  [Tab] Vars"
+			return *m, nil
+		}
 		m.IsEnvModalOpen = false
 		m.StatusMsg = "Ready"
 		return *m, nil
 
-	case "up", "k":
-		if m.EnvModalSelectedIdx > 0 {
-			m.EnvModalSelectedIdx--
+	case "tab":
+		if m.EnvModalFocusPane == "envs" {
+			if m.EnvModalSelectedIdx > 0 && m.EnvModalSelectedIdx <= len(m.Coll.Environments) {
+				m.EnvModalFocusPane = "vars"
+				m.EnvModalVarIdx = 0
+				m.StatusMsg = "Focused on Variables. [↑/↓] Select  [Enter] Edit  [N] Add  [D] Delete  [Tab] Envs"
+			}
+		} else {
+			m.EnvModalFocusPane = "envs"
+			m.StatusMsg = "Focused on Environments. [↑/↓] Select  [Enter] Activate  [Tab] Vars"
 		}
+		return *m, nil
+
+	case "left", "h":
+		m.EnvModalFocusPane = "envs"
+		return *m, nil
+
+	case "right", "l":
+		if m.EnvModalSelectedIdx > 0 && m.EnvModalSelectedIdx <= len(m.Coll.Environments) {
+			m.EnvModalFocusPane = "vars"
+			m.EnvModalVarIdx = 0
+		}
+		return *m, nil
+
+	case "up", "k":
+		if m.EnvModalFocusPane == "vars" {
+			if m.EnvModalVarIdx > 0 {
+				m.EnvModalVarIdx--
+			}
+		} else {
+			if m.EnvModalSelectedIdx > 0 {
+				m.EnvModalSelectedIdx--
+			}
+		}
+		return *m, nil
 
 	case "down", "j":
-		if m.EnvModalSelectedIdx < totalEnvs-1 {
-			m.EnvModalSelectedIdx++
+		if m.EnvModalFocusPane == "vars" {
+			varKeys := m.getSelectedEnvVarKeys()
+			if m.EnvModalVarIdx < len(varKeys)-1 {
+				m.EnvModalVarIdx++
+			}
+		} else {
+			if m.EnvModalSelectedIdx < totalEnvs-1 {
+				m.EnvModalSelectedIdx++
+			}
 		}
+		return *m, nil
 
 	case "enter", " ":
-		if m.EnvModalSelectedIdx == 0 {
-			m.Coll.ActiveEnvironment = ""
-			m.StatusMsg = "Environment disabled (No Environment)"
+		if m.EnvModalFocusPane == "vars" {
+			varKeys := m.getSelectedEnvVarKeys()
+			if len(varKeys) > 0 && m.EnvModalVarIdx >= 0 && m.EnvModalVarIdx < len(varKeys) {
+				key := varKeys[m.EnvModalVarIdx]
+				env := m.getSelectedEnv()
+				val := env.Variables[key]
+				m.IsEnvPromptOpen = true
+				m.EnvPromptTitle = fmt.Sprintf("EDIT VARIABLE [%s]", key)
+				m.EnvPromptText = val
+				m.EnvPromptCursor = len(val)
+				m.EnvPromptAction = "edit_var"
+				m.EnvPromptTempKey = key
+			}
 		} else {
-			chosen := m.Coll.Environments[m.EnvModalSelectedIdx-1]
-			m.Coll.ActiveEnvironment = chosen.Name
-			m.StatusMsg = fmt.Sprintf("Environment switched to: [%s]", chosen.Name)
+			if m.EnvModalSelectedIdx == 0 {
+				m.Coll.ActiveEnvironment = ""
+				m.StatusMsg = "Environment disabled (No Environment)"
+			} else {
+				chosen := m.Coll.Environments[m.EnvModalSelectedIdx-1]
+				m.Coll.ActiveEnvironment = chosen.Name
+				m.StatusMsg = fmt.Sprintf("Environment switched to: [%s]", chosen.Name)
+			}
 		}
-		m.IsEnvModalOpen = false
+		return *m, nil
+
+	case "n", "N":
+		if m.EnvModalFocusPane == "vars" {
+			if m.EnvModalSelectedIdx > 0 && m.EnvModalSelectedIdx <= len(m.Coll.Environments) {
+				m.IsEnvPromptOpen = true
+				m.EnvPromptTitle = "NEW VARIABLE NAME"
+				m.EnvPromptText = ""
+				m.EnvPromptCursor = 0
+				m.EnvPromptAction = "new_var_name"
+			}
+		} else {
+			m.IsEnvPromptOpen = true
+			m.EnvPromptTitle = "CREATE NEW ENVIRONMENT"
+			m.EnvPromptText = ""
+			m.EnvPromptCursor = 0
+			m.EnvPromptAction = "new_env"
+		}
+		return *m, nil
+
+	case "d", "D", "delete":
+		if m.EnvModalFocusPane == "vars" {
+			varKeys := m.getSelectedEnvVarKeys()
+			if len(varKeys) > 0 && m.EnvModalVarIdx >= 0 && m.EnvModalVarIdx < len(varKeys) {
+				key := varKeys[m.EnvModalVarIdx]
+				env := m.getSelectedEnv()
+				delete(env.Variables, key)
+				_ = m.saveEnvironment(env)
+				if m.EnvModalVarIdx >= len(env.Variables) && m.EnvModalVarIdx > 0 {
+					m.EnvModalVarIdx--
+				}
+				m.StatusMsg = fmt.Sprintf("Deleted variable [%s]", key)
+			}
+		}
+		return *m, nil
+
+	case "s", "S":
+		if env := m.getSelectedEnv(); env != nil {
+			_ = m.saveEnvironment(env)
+		}
+		return *m, nil
+	}
+	return *m, nil
+}
+
+func (m *Model) handleEnvPromptKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.Type {
+	case tea.KeyEsc:
+		m.IsEnvPromptOpen = false
+		return *m, nil
+
+	case tea.KeyEnter:
+		val := m.EnvPromptText
+		switch m.EnvPromptAction {
+		case "edit_var":
+			if m.EnvModalSelectedIdx > 0 && m.EnvModalSelectedIdx <= len(m.Coll.Environments) {
+				env := m.Coll.Environments[m.EnvModalSelectedIdx-1]
+				env.Variables[m.EnvPromptTempKey] = val
+				_ = m.saveEnvironment(env)
+				m.StatusMsg = fmt.Sprintf("Updated [%s] = %s", m.EnvPromptTempKey, val)
+			}
+			m.IsEnvPromptOpen = false
+
+		case "new_var_name":
+			key := strings.TrimSpace(val)
+			if key != "" {
+				m.EnvPromptTempKey = key
+				m.EnvPromptTitle = fmt.Sprintf("VALUE FOR [%s]", key)
+				m.EnvPromptText = ""
+				m.EnvPromptCursor = 0
+				m.EnvPromptAction = "new_var_val"
+				return *m, nil
+			}
+			m.IsEnvPromptOpen = false
+
+		case "new_var_val":
+			if m.EnvModalSelectedIdx > 0 && m.EnvModalSelectedIdx <= len(m.Coll.Environments) {
+				env := m.Coll.Environments[m.EnvModalSelectedIdx-1]
+				env.Variables[m.EnvPromptTempKey] = val
+				_ = m.saveEnvironment(env)
+				m.StatusMsg = fmt.Sprintf("Added variable [%s]", m.EnvPromptTempKey)
+			}
+			m.IsEnvPromptOpen = false
+
+		case "new_env":
+			name := strings.TrimSpace(val)
+			if name != "" {
+				newEnv := &bru.BrunoEnvironment{
+					Name:      name,
+					Variables: make(map[string]string),
+				}
+				m.Coll.Environments = append(m.Coll.Environments, newEnv)
+				_ = m.saveEnvironment(newEnv)
+				m.EnvModalSelectedIdx = len(m.Coll.Environments)
+				m.StatusMsg = fmt.Sprintf("Created environment [%s]", name)
+			}
+			m.IsEnvPromptOpen = false
+		}
+		return *m, nil
+
+	case tea.KeyBackspace:
+		if m.EnvPromptCursor > 0 && len(m.EnvPromptText) > 0 {
+			m.EnvPromptText = m.EnvPromptText[:m.EnvPromptCursor-1] + m.EnvPromptText[m.EnvPromptCursor:]
+			m.EnvPromptCursor--
+		}
+		return *m, nil
+
+	case tea.KeyDelete:
+		if m.EnvPromptCursor < len(m.EnvPromptText) {
+			m.EnvPromptText = m.EnvPromptText[:m.EnvPromptCursor] + m.EnvPromptText[m.EnvPromptCursor+1:]
+		}
+		return *m, nil
+
+	case tea.KeyLeft:
+		if m.EnvPromptCursor > 0 {
+			m.EnvPromptCursor--
+		}
+		return *m, nil
+
+	case tea.KeyRight:
+		if m.EnvPromptCursor < len(m.EnvPromptText) {
+			m.EnvPromptCursor++
+		}
+		return *m, nil
+
+	case tea.KeyHome, tea.KeyCtrlA:
+		m.EnvPromptCursor = 0
+		return *m, nil
+
+	case tea.KeyEnd, tea.KeyCtrlE:
+		m.EnvPromptCursor = len(m.EnvPromptText)
+		return *m, nil
+
+	case tea.KeyRunes:
+		ch := string(msg.Runes)
+		m.EnvPromptText = m.EnvPromptText[:m.EnvPromptCursor] + ch + m.EnvPromptText[m.EnvPromptCursor:]
+		m.EnvPromptCursor += len(ch)
+		return *m, nil
 	}
 	return *m, nil
 }
@@ -709,16 +1266,33 @@ func (m *Model) handleEnvModalMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 	startRow := (m.Height - modalH) / 2
 	startCol := (m.Width - modalW) / 2
 	totalEnvs := len(m.Coll.Environments) + 1
+	leftW := (modalW - 2) * 35 / 100
+	if leftW < 18 {
+		leftW = 18
+	}
 
 	if msg.Button == tea.MouseButtonWheelUp {
-		if m.EnvModalSelectedIdx > 0 {
-			m.EnvModalSelectedIdx--
+		if m.EnvModalFocusPane == "vars" {
+			if m.EnvModalVarIdx > 0 {
+				m.EnvModalVarIdx--
+			}
+		} else {
+			if m.EnvModalSelectedIdx > 0 {
+				m.EnvModalSelectedIdx--
+			}
 		}
 		return *m, nil
 	}
 	if msg.Button == tea.MouseButtonWheelDown {
-		if m.EnvModalSelectedIdx < totalEnvs-1 {
-			m.EnvModalSelectedIdx++
+		if m.EnvModalFocusPane == "vars" {
+			varKeys := m.getSelectedEnvVarKeys()
+			if m.EnvModalVarIdx < len(varKeys)-1 {
+				m.EnvModalVarIdx++
+			}
+		} else {
+			if m.EnvModalSelectedIdx < totalEnvs-1 {
+				m.EnvModalSelectedIdx++
+			}
 		}
 		return *m, nil
 	}
@@ -738,26 +1312,237 @@ func (m *Model) handleEnvModalMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 			return *m, nil
 		}
 
-		// Envs list
-		if relY >= 2 && relY < modalH-2 {
-			clickedEnvIdx := relY - 2
-			if clickedEnvIdx >= 0 && clickedEnvIdx < totalEnvs {
-				m.EnvModalSelectedIdx = clickedEnvIdx
-				if clickedEnvIdx == 0 {
-					m.Coll.ActiveEnvironment = ""
-					m.StatusMsg = "Environment disabled (No Environment)"
-				} else {
-					chosen := m.Coll.Environments[clickedEnvIdx-1]
-					m.Coll.ActiveEnvironment = chosen.Name
-					m.StatusMsg = fmt.Sprintf("Environment switched to: [%s]", chosen.Name)
+		// Left column (Envs)
+		if relX <= leftW+1 {
+			m.EnvModalFocusPane = "envs"
+			if relY >= 2 && relY < modalH-2 {
+				clickedEnvIdx := relY - 2
+				if clickedEnvIdx >= 0 && clickedEnvIdx < totalEnvs {
+					m.EnvModalSelectedIdx = clickedEnvIdx
+					if clickedEnvIdx == 0 {
+						m.Coll.ActiveEnvironment = ""
+						m.StatusMsg = "Environment disabled (No Environment)"
+					} else {
+						chosen := m.Coll.Environments[clickedEnvIdx-1]
+						m.Coll.ActiveEnvironment = chosen.Name
+						m.StatusMsg = fmt.Sprintf("Environment switched to: [%s]", chosen.Name)
+					}
+					m.IsEnvModalOpen = false
+					return *m, nil
 				}
-				m.IsEnvModalOpen = false
-				return *m, nil
+			}
+		} else {
+			// Right column (Vars)
+			m.EnvModalFocusPane = "vars"
+			varKeys := m.getSelectedEnvVarKeys()
+			if relY >= 3 && relY < modalH-2 {
+				clickedVarIdx := relY - 3
+				if clickedVarIdx >= 0 && clickedVarIdx < len(varKeys) {
+					m.EnvModalVarIdx = clickedVarIdx
+					key := varKeys[clickedVarIdx]
+					env := m.getSelectedEnv()
+					val := env.Variables[key]
+					m.IsEnvPromptOpen = true
+					m.EnvPromptTitle = fmt.Sprintf("EDIT VARIABLE [%s]", key)
+					m.EnvPromptText = val
+					m.EnvPromptCursor = len(val)
+					m.EnvPromptAction = "edit_var"
+					m.EnvPromptTempKey = key
+					return *m, nil
+				}
 			}
 		}
 	}
 	return *m, nil
 }
+
+func (m *Model) openNewRequestPrompt() {
+	m.IsNewReqPromptOpen = true
+	m.NewReqStep = 0
+	m.NewReqName = ""
+	m.NewReqMethod = bru.MethodGet
+	m.NewReqURL = "https://"
+	m.StatusMsg = "New Request: enter details. [Tab] Next field  [Enter] Create  [Esc] Cancel"
+}
+
+func (m *Model) handleNewReqKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.Type {
+	case tea.KeyEsc:
+		m.IsNewReqPromptOpen = false
+		m.StatusMsg = "Ready"
+		return *m, nil
+
+	case tea.KeyTab:
+		m.NewReqStep = (m.NewReqStep + 1) % 3
+		return *m, nil
+
+	case tea.KeyShiftTab:
+		m.NewReqStep = (m.NewReqStep + 2) % 3
+		return *m, nil
+
+	case tea.KeyEnter:
+		if m.NewReqStep == 0 {
+			if strings.TrimSpace(m.NewReqName) != "" {
+				m.NewReqStep = 1
+			}
+			return *m, nil
+		} else if m.NewReqStep == 1 {
+			m.NewReqStep = 2
+			return *m, nil
+		} else {
+			m.createNewRequest()
+			m.IsNewReqPromptOpen = false
+			return *m, nil
+		}
+
+	case tea.KeyLeft, tea.KeyRight:
+		if m.NewReqStep == 1 {
+			methods := []bru.HttpMethod{bru.MethodGet, bru.MethodPost, bru.MethodPut, bru.MethodPatch, bru.MethodDelete}
+			idx := 0
+			for i, meth := range methods {
+				if meth == m.NewReqMethod {
+					idx = i
+					break
+				}
+			}
+			if msg.Type == tea.KeyRight {
+				m.NewReqMethod = methods[(idx+1)%len(methods)]
+			} else {
+				m.NewReqMethod = methods[(idx-1+len(methods))%len(methods)]
+			}
+			return *m, nil
+		}
+
+	case tea.KeyBackspace:
+		if m.NewReqStep == 0 && len(m.NewReqName) > 0 {
+			m.NewReqName = m.NewReqName[:len(m.NewReqName)-1]
+		} else if m.NewReqStep == 2 && len(m.NewReqURL) > 0 {
+			m.NewReqURL = m.NewReqURL[:len(m.NewReqURL)-1]
+		}
+		return *m, nil
+
+	case tea.KeyRunes:
+		ch := string(msg.Runes)
+		if m.NewReqStep == 0 {
+			m.NewReqName += ch
+		} else if m.NewReqStep == 1 {
+			switch strings.ToUpper(ch) {
+			case "G":
+				m.NewReqMethod = bru.MethodGet
+			case "P":
+				if m.NewReqMethod == bru.MethodPost {
+					m.NewReqMethod = bru.MethodPut
+				} else if m.NewReqMethod == bru.MethodPut {
+					m.NewReqMethod = bru.MethodPatch
+				} else {
+					m.NewReqMethod = bru.MethodPost
+				}
+			case "D":
+				m.NewReqMethod = bru.MethodDelete
+			}
+		} else if m.NewReqStep == 2 {
+			m.NewReqURL += ch
+		}
+		return *m, nil
+	}
+	return *m, nil
+}
+
+func (m *Model) createNewRequest() {
+	name := strings.TrimSpace(m.NewReqName)
+	if name == "" {
+		name = "New Request"
+	}
+	method := m.NewReqMethod
+	if method == "" {
+		method = bru.MethodGet
+	}
+	url := strings.TrimSpace(m.NewReqURL)
+
+	targetDir := m.Coll.Path
+	var targetFolder *bru.BrunoFolder
+
+	if m.SelectedIdx >= 0 && m.SelectedIdx < len(m.VisibleItems) {
+		it := m.VisibleItems[m.SelectedIdx]
+		if it.Type == "folder" && it.Folder != nil {
+			targetFolder = it.Folder
+			if targetFolder.Path != "" {
+				targetDir = targetFolder.Path
+			}
+		} else if it.Type == "request" && it.Request != nil && it.Request.FilePath != "" {
+			targetDir = filepath.Dir(it.Request.FilePath)
+			for _, f := range m.Coll.Folders {
+				if f.Path == targetDir {
+					targetFolder = f
+					break
+				}
+			}
+		}
+	}
+
+	slug := strings.ToLower(strings.Map(func(r rune) rune {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') || r == '_' || r == '-' {
+			return r
+		}
+		if r == ' ' {
+			return '-'
+		}
+		return -1
+	}, name))
+	if slug == "" {
+		slug = "request"
+	}
+
+	filename := slug + ".bru"
+	fullPath := filepath.Join(targetDir, filename)
+
+	counter := 1
+	for {
+		if _, err := os.Stat(fullPath); os.IsNotExist(err) {
+			break
+		}
+		filename = fmt.Sprintf("%s-%d.bru", slug, counter)
+		fullPath = filepath.Join(targetDir, filename)
+		counter++
+	}
+
+	newReq := &bru.BrunoRequest{
+		ID:          strings.TrimSuffix(filename, ".bru"),
+		Name:        name,
+		Filename:    filename,
+		FilePath:    fullPath,
+		Method:      method,
+		URL:         url,
+		BodyType:    "json",
+		BodyContent: "{\n  \n}",
+		Headers:     []bru.BruHeader{},
+		Params:      []bru.BruParam{},
+	}
+
+	raw := bru.SerializeRequest(newReq)
+	if err := os.WriteFile(fullPath, []byte(raw), 0644); err != nil {
+		m.StatusMsg = fmt.Sprintf("Error creating request file: %v", err)
+		return
+	}
+
+	m.Coll.Requests = append(m.Coll.Requests, newReq)
+	if targetFolder != nil {
+		targetFolder.Requests = append(targetFolder.Requests, newReq)
+	}
+
+	m.rebuildTree()
+
+	for idx, item := range m.VisibleItems {
+		if item.Type == "request" && item.Request != nil && item.Request.FilePath == fullPath {
+			m.SelectedIdx = idx
+			m.selectCurrentItem()
+			break
+		}
+	}
+
+	m.StatusMsg = fmt.Sprintf("Created %s %s [%s]", method, name, filename)
+}
+
 
 func (m *Model) cycleMethod() {
 	if m.SelectedRequest == nil {
@@ -919,6 +1704,16 @@ func (m Model) View() string {
 
 	body := lipgloss.JoinHorizontal(lipgloss.Top, sidebar, content)
 	base := lipgloss.JoinVertical(lipgloss.Left, header, body, statusBar)
+
+	if m.IsNewReqPromptOpen {
+		modal := m.renderNewReqModal()
+		return overlayModal(base, modal, m.Width, m.Height)
+	}
+
+	if m.IsEnvPromptOpen {
+		modal := m.renderPromptModal()
+		return overlayModal(base, modal, m.Width, m.Height)
+	}
 
 	if m.IsEnvModalOpen {
 		modal := m.renderEnvironmentModal()
@@ -1082,24 +1877,23 @@ func (m Model) renderSidebar(width, height int) string {
 			}
 		}
 
+		truncated := ansi.Truncate(lineContent, innerW, "")
+		visW := ansi.StringWidth(truncated)
+		padded := truncated
+		if visW < innerW {
+			padded += strings.Repeat(" ", innerW-visW)
+		}
+
 		if isSelected {
 			selStyle := lipgloss.NewStyle().
-				Width(innerW).
-				MaxWidth(innerW).
-				Height(1).
-				MaxHeight(1).
 				Background(lipgloss.Color(m.Theme.Selection)).
 				Foreground(lipgloss.Color(m.Theme.SelectionFg)).
 				Bold(true)
-			lines = append(lines, selStyle.Render(lineContent))
+			lines = append(lines, selStyle.Render(padded))
 		} else {
 			normStyle := lipgloss.NewStyle().
-				Width(innerW).
-				MaxWidth(innerW).
-				Height(1).
-				MaxHeight(1).
 				Foreground(lipgloss.Color(m.Theme.Fg))
-			lines = append(lines, normStyle.Render(lineContent))
+			lines = append(lines, normStyle.Render(padded))
 		}
 	}
 
@@ -1182,8 +1976,6 @@ func (m Model) renderRequestPane(width, height int) string {
 	}
 	line2 := " " + strings.Join(tabStrs, " ")
 
-	sepLine := lipgloss.NewStyle().Foreground(lipgloss.Color(m.Theme.Border)).Render(strings.Repeat("─", innerW))
-
 	var contentLines []string
 	switch m.ActiveTab {
 	case "headers":
@@ -1235,22 +2027,100 @@ func (m Model) renderRequestPane(width, height int) string {
 	}
 
 	var finalRows []string
-	finalRows = append(finalRows, line1, line2, sepLine)
-	for r := 0; r < bodyCapacity; r++ {
-		if r < len(contentLines) {
-			finalRows = append(finalRows, contentLines[r])
-		} else {
-			finalRows = append(finalRows, "")
+	if m.IsEditingContent {
+		editBanner := lipgloss.NewStyle().Foreground(lipgloss.Color(m.Theme.Patch)).Bold(true).Render(fmt.Sprintf("── EDITING [%s] (Esc: Done, Ctrl+S: Save) ", strings.ToUpper(m.ActiveTab)))
+		bannerLen := ansi.StringWidth(editBanner)
+		trailingLen := innerW - bannerLen
+		if trailingLen < 0 {
+			trailingLen = 0
+		}
+		editSep := editBanner + lipgloss.NewStyle().Foreground(lipgloss.Color(m.Theme.Border)).Render(strings.Repeat("─", trailingLen))
+		finalRows = append(finalRows, line1, line2, editSep)
+
+		rawLines := strings.Split(m.ContentEditText, "\n")
+		cur := m.ContentCursor
+		curLine := 0
+		curCol := 0
+		charCount := 0
+		for idx, l := range rawLines {
+			lineLen := len(l)
+			if cur >= charCount && cur <= charCount+lineLen {
+				curLine = idx
+				curCol = cur - charCount
+				break
+			}
+			charCount += lineLen + 1
+		}
+
+		offset := m.ContentScroll
+		if curLine < offset {
+			offset = curLine
+		} else if curLine >= offset+bodyCapacity {
+			offset = curLine - bodyCapacity + 1
+		}
+		if offset < 0 {
+			offset = 0
+		}
+		m.ContentScroll = offset
+
+		for r := 0; r < bodyCapacity; r++ {
+			idx := offset + r
+			if idx < len(rawLines) {
+				l := rawLines[idx]
+				if idx == curLine {
+					var cBefore, cChar, cAfter string
+					if curCol < len(l) {
+						cBefore = l[:curCol]
+						cChar = string(l[curCol])
+						cAfter = l[curCol+1:]
+					} else {
+						cBefore = l
+						cChar = " "
+						cAfter = ""
+					}
+					curBlock := lipgloss.NewStyle().
+						Foreground(lipgloss.Color("#11111b")).
+						Background(lipgloss.Color(m.Theme.Accent)).
+						Bold(true).
+						Render(cChar)
+					renderedLine := " " + cBefore + curBlock + cAfter
+					finalRows = append(finalRows, ansi.Truncate(renderedLine, innerW, ""))
+				} else {
+					finalRows = append(finalRows, ansi.Truncate(" "+l, innerW, ""))
+				}
+			} else {
+				finalRows = append(finalRows, "")
+			}
+		}
+	} else {
+		hint := lipgloss.NewStyle().Foreground(lipgloss.Color(m.Theme.Subtext)).Render("── [I] Edit Content ")
+		hLen := ansi.StringWidth(hint)
+		trailingLen := innerW - hLen
+		if trailingLen < 0 {
+			trailingLen = 0
+		}
+		normalSep := hint + lipgloss.NewStyle().Foreground(lipgloss.Color(m.Theme.Border)).Render(strings.Repeat("─", trailingLen))
+		finalRows = append(finalRows, line1, line2, normalSep)
+		for r := 0; r < bodyCapacity; r++ {
+			if r < len(contentLines) {
+				finalRows = append(finalRows, contentLines[r])
+			} else {
+				finalRows = append(finalRows, "")
+			}
 		}
 	}
 
+	borderColor := m.Theme.Border
+	if m.IsEditingContent {
+		borderColor = m.Theme.BorderFocus
+	}
 	boxStyle := lipgloss.NewStyle().
 		Width(width - 2).
 		MaxWidth(width).
 		Height(height - 2).
 		MaxHeight(height).
 		BorderStyle(lipgloss.RoundedBorder()).
-		BorderForeground(lipgloss.Color(m.Theme.Border))
+		BorderForeground(lipgloss.Color(borderColor))
 
 	return boxStyle.Render(strings.Join(finalRows, "\n"))
 }
@@ -1369,7 +2239,7 @@ func (m Model) renderStatusBar(width int) string {
 
 	shortcuts := lipgloss.NewStyle().
 		Foreground(lipgloss.Color(m.Theme.Fg)).
-		Render(" [Space] Send   [U] Edit URL   [E] Env   [M] Method   [1-5] Tabs   [S] Save   [q] Quit")
+		Render(" [Space] Send   [U] Edit URL   [E] Env   [I] Edit Tab   [N] New Req   [M] Method   [S] Save   [q] Quit")
 
 	status := lipgloss.NewStyle().
 		Foreground(lipgloss.Color(m.Theme.Accent)).
@@ -1506,24 +2376,34 @@ func (m Model) renderEnvironmentModal() string {
 		selectedEnv = m.Coll.Environments[m.EnvModalSelectedIdx-1]
 	}
 
-	if selectedEnv == nil {
-		rightLines = append(rightLines, subtext.Render(" (No environment active - variables disabled)"))
-	} else {
-		rightLines = append(rightLines, accent.Render(fmt.Sprintf(" Variables in [%s] (%d):", selectedEnv.Name, len(selectedEnv.Variables))))
-		var varKeys []string
+	var varKeys []string
+	if selectedEnv != nil {
 		for k := range selectedEnv.Variables {
 			varKeys = append(varKeys, k)
 		}
 		sort.Strings(varKeys)
+	}
+
+	if selectedEnv == nil {
+		rightLines = append(rightLines, subtext.Render(" (No environment active - variables disabled)"))
+	} else {
+		var rHeader string
+		if m.EnvModalFocusPane == "vars" {
+			rHeader = accent.Render(fmt.Sprintf(" Variables in [%s] (%d) [*]:", selectedEnv.Name, len(varKeys)))
+		} else {
+			rHeader = subtext.Render(fmt.Sprintf(" Variables in [%s] (%d) [Tab]:", selectedEnv.Name, len(varKeys)))
+		}
+		rightLines = append(rightLines, rHeader)
+
 		for _, k := range varKeys {
 			val := selectedEnv.Variables[k]
-			line := fmt.Sprintf(" %s: %s", lipgloss.NewStyle().Background(modalBg).Bold(true).Render(k), subtext.Render(val))
+			line := fmt.Sprintf(" %s: %s", k, val)
 			if ansi.StringWidth(line) > rightW {
 				maxVal := rightW - len(k) - 4
 				if maxVal > 3 {
 					val = val[:maxVal-1] + "…"
 				}
-				line = fmt.Sprintf(" %s: %s", lipgloss.NewStyle().Background(modalBg).Bold(true).Render(k), subtext.Render(val))
+				line = fmt.Sprintf(" %s: %s", k, val)
 			}
 			rightLines = append(rightLines, line)
 		}
@@ -1532,7 +2412,28 @@ func (m Model) renderEnvironmentModal() string {
 	var finalRightLines []string
 	for r := 0; r < contentH; r++ {
 		if r < len(rightLines) {
-			finalRightLines = append(finalRightLines, lipgloss.NewStyle().Width(rightW).MaxWidth(rightW).Height(1).MaxHeight(1).Background(modalBg).Render(rightLines[r]))
+			lineText := rightLines[r]
+			isVarSelected := (m.EnvModalFocusPane == "vars" && r > 0 && r-1 == m.EnvModalVarIdx)
+			if isVarSelected {
+				sel := lipgloss.NewStyle().
+					Width(rightW).
+					MaxWidth(rightW).
+					Height(1).
+					MaxHeight(1).
+					Background(lipgloss.Color(m.Theme.Selection)).
+					Foreground(lipgloss.Color(m.Theme.SelectionFg)).
+					Bold(true)
+				finalRightLines = append(finalRightLines, sel.Render(lineText))
+			} else {
+				norm := lipgloss.NewStyle().
+					Width(rightW).
+					MaxWidth(rightW).
+					Height(1).
+					MaxHeight(1).
+					Background(modalBg).
+					Foreground(lipgloss.Color(m.Theme.Fg))
+				finalRightLines = append(finalRightLines, norm.Render(lineText))
+			}
 		} else {
 			finalRightLines = append(finalRightLines, lipgloss.NewStyle().Width(rightW).MaxWidth(rightW).Height(1).MaxHeight(1).Background(modalBg).Render(strings.Repeat(" ", rightW)))
 		}
@@ -1544,8 +2445,13 @@ func (m Model) renderEnvironmentModal() string {
 		middleRows = append(middleRows, leftLines[r]+sepCol+finalRightLines[r])
 	}
 
-	footer := subtext.Render(" [↑/↓] Navigate   [Enter/Space] Activate Environment   [Esc] Close")
-	footerLine := lipgloss.NewStyle().Width(innerW).MaxWidth(innerW).Background(modalBg).Foreground(lipgloss.Color(m.Theme.Subtext)).Render(" " + footer)
+	var footer string
+	if m.EnvModalFocusPane == "envs" {
+		footer = subtext.Render(" [Tab] Focus Vars   [↑/↓] Select   [Enter] Activate   [N] New Env   [Esc] Close")
+	} else {
+		footer = accent.Render(" [Tab] Focus Envs   [↑/↓] Select   [Enter] Edit Value   [N] Add Var   [D] Delete   [S] Save")
+	}
+	footerLine := lipgloss.NewStyle().Width(innerW).MaxWidth(innerW).Background(modalBg).Render(" " + footer)
 
 	allModalRows := []string{row0, row1}
 	allModalRows = append(allModalRows, middleRows...)
@@ -1558,10 +2464,172 @@ func (m Model) renderEnvironmentModal() string {
 		MaxHeight(modalH).
 		BorderStyle(lipgloss.RoundedBorder()).
 		BorderForeground(lipgloss.Color(m.Theme.Accent)).
+		BorderBackground(modalBg).
 		Background(modalBg)
 
 	return modalBoxStyle.Render(strings.Join(allModalRows, "\n"))
 }
+
+func (m Model) renderPromptModal() string {
+	modalW := 56
+	if modalW > m.Width-4 {
+		modalW = m.Width - 4
+	}
+	modalH := 8
+	innerW := modalW - 2
+	modalBg := lipgloss.Color("#181825")
+	inputBg := lipgloss.Color("#1e1e2e")
+
+	titleStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(m.Theme.Accent)).Background(modalBg).Bold(true)
+	subtext := lipgloss.NewStyle().Foreground(lipgloss.Color(m.Theme.Subtext)).Background(modalBg)
+
+	title := titleStyle.Render(" " + m.EnvPromptTitle)
+	sep := lipgloss.NewStyle().Foreground(lipgloss.Color(m.Theme.Border)).Background(modalBg).Render(strings.Repeat("─", innerW))
+
+	curChar := " "
+	if m.EnvPromptCursor < len(m.EnvPromptText) {
+		curChar = string(m.EnvPromptText[m.EnvPromptCursor])
+	}
+	curBlock := lipgloss.NewStyle().
+		Foreground(lipgloss.Color("#11111b")).
+		Background(lipgloss.Color(m.Theme.Accent)).
+		Bold(true).
+		Render(curChar)
+
+	before := m.EnvPromptText[:m.EnvPromptCursor]
+	after := ""
+	if m.EnvPromptCursor < len(m.EnvPromptText) {
+		after = m.EnvPromptText[m.EnvPromptCursor+1:]
+	}
+	inputContent := before + curBlock + after
+	inputLine := lipgloss.NewStyle().
+		Width(innerW - 4).
+		MaxWidth(innerW - 4).
+		Background(inputBg).
+		Foreground(lipgloss.Color(m.Theme.Fg)).
+		Render(" " + inputContent)
+
+	inputBox := lipgloss.NewStyle().
+		Width(innerW).
+		MaxWidth(innerW).
+		Background(modalBg).
+		Render("  " + inputLine)
+
+	footer := subtext.Render(" [Enter] Confirm   [Esc] Cancel")
+	footerLine := lipgloss.NewStyle().Width(innerW).MaxWidth(innerW).Background(modalBg).Render(" " + footer)
+
+	lines := []string{
+		lipgloss.NewStyle().Width(innerW).MaxWidth(innerW).Background(modalBg).Render(title),
+		sep,
+		lipgloss.NewStyle().Width(innerW).MaxWidth(innerW).Background(modalBg).Render(""),
+		inputBox,
+		lipgloss.NewStyle().Width(innerW).MaxWidth(innerW).Background(modalBg).Render(""),
+		footerLine,
+	}
+
+	modalBoxStyle := lipgloss.NewStyle().
+		Width(modalW - 2).
+		MaxWidth(modalW).
+		Height(modalH - 2).
+		MaxHeight(modalH).
+		BorderStyle(lipgloss.RoundedBorder()).
+		BorderForeground(lipgloss.Color(m.Theme.Accent)).
+		BorderBackground(modalBg).
+		Background(modalBg)
+
+	return modalBoxStyle.Render(strings.Join(lines, "\n"))
+}
+
+func (m Model) renderNewReqModal() string {
+	modalW := 60
+	if modalW > m.Width-4 {
+		modalW = m.Width - 4
+	}
+	modalH := 12
+	innerW := modalW - 2
+	modalBg := lipgloss.Color("#181825")
+	inputBg := lipgloss.Color("#1e1e2e")
+
+	titleStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(m.Theme.Accent)).Background(modalBg).Bold(true)
+	subtext := lipgloss.NewStyle().Foreground(lipgloss.Color(m.Theme.Subtext)).Background(modalBg)
+	activeLabel := lipgloss.NewStyle().Foreground(lipgloss.Color(m.Theme.Accent)).Background(modalBg).Bold(true)
+	inactiveLabel := lipgloss.NewStyle().Foreground(lipgloss.Color(m.Theme.Fg)).Background(modalBg)
+
+	title := titleStyle.Render(" CREATE NEW REQUEST")
+	sep := lipgloss.NewStyle().Foreground(lipgloss.Color(m.Theme.Border)).Background(modalBg).Render(strings.Repeat("─", innerW))
+
+	// Step 0: Name
+	nameLbl := inactiveLabel.Render(" Name:   ")
+	if m.NewReqStep == 0 {
+		nameLbl = activeLabel.Render(" Name: > ")
+	}
+	nameInp := lipgloss.NewStyle().Width(innerW - 14).MaxWidth(innerW - 14).Background(inputBg).Render(" " + m.NewReqName + "█")
+	nameRow := lipgloss.NewStyle().Width(innerW).MaxWidth(innerW).Background(modalBg).Render(" " + nameLbl + nameInp)
+
+	// Step 1: Method
+	methLbl := inactiveLabel.Render(" Method: ")
+	if m.NewReqStep == 1 {
+		methLbl = activeLabel.Render(" Method:> ")
+	}
+	methods := []bru.HttpMethod{bru.MethodGet, bru.MethodPost, bru.MethodPut, bru.MethodPatch, bru.MethodDelete}
+	var methBadges []string
+	for _, meth := range methods {
+		if meth == m.NewReqMethod {
+			methBadges = append(methBadges, lipgloss.NewStyle().
+				Foreground(lipgloss.Color("#11111b")).
+				Background(theme.MethodColor(string(meth), m.Theme)).
+				Bold(true).
+				Render(fmt.Sprintf(" %s ", meth)))
+		} else {
+			methBadges = append(methBadges, lipgloss.NewStyle().
+				Foreground(lipgloss.Color(m.Theme.Subtext)).
+				Background(inputBg).
+				Render(fmt.Sprintf(" %s ", meth)))
+		}
+	}
+	methHint := ""
+	if m.NewReqStep == 1 {
+		methHint = " " + subtext.Render("[←/→ Cycle]")
+	}
+	methRow := lipgloss.NewStyle().Width(innerW).MaxWidth(innerW).Background(modalBg).Render(" " + methLbl + strings.Join(methBadges, " ") + methHint)
+
+	// Step 2: URL
+	urlLbl := inactiveLabel.Render(" URL:    ")
+	if m.NewReqStep == 2 {
+		urlLbl = activeLabel.Render(" URL:  > ")
+	}
+	urlInp := lipgloss.NewStyle().Width(innerW - 14).MaxWidth(innerW - 14).Background(inputBg).Render(" " + m.NewReqURL + "█")
+	urlRow := lipgloss.NewStyle().Width(innerW).MaxWidth(innerW).Background(modalBg).Render(" " + urlLbl + urlInp)
+
+	footer := subtext.Render(" [Tab] Next field   [Enter] Confirm/Create   [Esc] Cancel")
+	footerLine := lipgloss.NewStyle().Width(innerW).MaxWidth(innerW).Background(modalBg).Render(" " + footer)
+
+	lines := []string{
+		lipgloss.NewStyle().Width(innerW).MaxWidth(innerW).Background(modalBg).Render(title),
+		sep,
+		lipgloss.NewStyle().Width(innerW).MaxWidth(innerW).Background(modalBg).Render(""),
+		nameRow,
+		lipgloss.NewStyle().Width(innerW).MaxWidth(innerW).Background(modalBg).Render(""),
+		methRow,
+		lipgloss.NewStyle().Width(innerW).MaxWidth(innerW).Background(modalBg).Render(""),
+		urlRow,
+		lipgloss.NewStyle().Width(innerW).MaxWidth(innerW).Background(modalBg).Render(""),
+		footerLine,
+	}
+
+	modalBoxStyle := lipgloss.NewStyle().
+		Width(modalW - 2).
+		MaxWidth(modalW).
+		Height(modalH - 2).
+		MaxHeight(modalH).
+		BorderStyle(lipgloss.RoundedBorder()).
+		BorderForeground(lipgloss.Color(m.Theme.Accent)).
+		BorderBackground(modalBg).
+		Background(modalBg)
+
+	return modalBoxStyle.Render(strings.Join(lines, "\n"))
+}
+
 
 func overlayModal(base string, modal string, screenW, screenH int) string {
 	baseLines := strings.Split(base, "\n")

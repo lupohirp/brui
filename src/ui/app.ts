@@ -149,6 +149,7 @@ export class BruiApp {
   }
 
   public start() {
+    process.title = 'brui';
     this.screen = blessed.screen({
       smartCSR: false,
       terminal: 'xterm-256color',

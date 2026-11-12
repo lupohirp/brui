@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+process.title = 'brui';
 const path = require('node:path');
 const fs = require('node:fs');
 

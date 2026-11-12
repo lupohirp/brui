@@ -45,6 +45,7 @@ function showVersion() {
 }
 
 async function main() {
+  process.title = 'brui';
   const args = process.argv.slice(2);
   let collectionPath = process.cwd();
   let themeName = 'Catppuccin Mocha';

@@ -94,6 +94,9 @@ export class ScriptRunner {
             return env.variables[name];
           }
         }
+        if (this.collection.runtimeVariables[name] !== undefined) {
+          return this.collection.runtimeVariables[name];
+        }
         return process.env[name];
       },
       setEnvVar: (name: string, value: any): void => {

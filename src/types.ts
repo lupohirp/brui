@@ -46,8 +46,11 @@ export interface OAuth2Config {
   tokenUrl: string;
   clientId: string;
   clientSecret?: string;
+  username?: string;
+  password?: string;
   scope?: string;
   redirectUri?: string;
+  refreshTokenUrl?: string;
   pkce?: boolean;
 }
 
@@ -98,8 +101,9 @@ export interface BrunoCollection {
   activeEnvironment?: string;
   runtimeVariables: Record<string, any>;
   collectionHeaders: BruHeader[];
-  collectionAuthType: 'none' | 'bearer' | 'basic';
+  collectionAuthType: 'none' | 'bearer' | 'basic' | 'oauth2';
   collectionAuthBearerToken?: string;
+  collectionAuthOAuth2?: OAuth2Config;
   collectionPreRequestScript?: string;
 }
 

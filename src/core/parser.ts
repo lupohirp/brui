@@ -124,8 +124,9 @@ export class CollectionParser {
 
     let collectionName = CollectionParser.getCollectionName(this.collectionRoot);
     let collectionHeaders: BruHeader[] = [];
-    let collectionAuthType: 'none' | 'bearer' | 'basic' = 'none';
+    let collectionAuthType: 'none' | 'bearer' | 'basic' | 'oauth2' = 'none';
     let collectionAuthBearerToken: string | undefined;
+    let collectionAuthOAuth2: OAuth2Config | undefined;
     let collectionPreRequestScript: string | undefined;
 
     // Check for collection.bru
@@ -146,6 +147,21 @@ export class CollectionParser {
           collectionAuthType = parsed.auth.mode;
           if (parsed.auth.mode === 'bearer') {
             collectionAuthBearerToken = parsed.auth.bearer?.token;
+          } else if (parsed.auth.mode === 'oauth2' && parsed.auth.oauth2) {
+            const o = parsed.auth.oauth2;
+            collectionAuthOAuth2 = {
+              grantType: o.grantType || 'authorization_code',
+              authUrl: o.authUrl || o.authorizationUrl,
+              tokenUrl: o.tokenUrl || o.accessTokenUrl,
+              clientId: o.clientId,
+              clientSecret: o.clientSecret,
+              username: o.username,
+              password: o.password,
+              scope: o.scope,
+              redirectUri: o.redirectUri || o.callbackUrl,
+              refreshTokenUrl: o.refreshTokenUrl,
+              pkce: o.pkce !== false
+            };
           }
         }
         if (parsed.script?.req) {
@@ -236,6 +252,7 @@ export class CollectionParser {
       collectionHeaders,
       collectionAuthType,
       collectionAuthBearerToken,
+      collectionAuthOAuth2,
       collectionPreRequestScript
     };
   }
@@ -379,8 +396,11 @@ export class CollectionParser {
             tokenUrl: o.tokenUrl || o.accessTokenUrl,
             clientId: o.clientId,
             clientSecret: o.clientSecret,
+            username: o.username,
+            password: o.password,
             scope: o.scope,
             redirectUri: o.redirectUri || o.callbackUrl,
+            refreshTokenUrl: o.refreshTokenUrl,
             pkce: o.pkce !== false
           };
         }

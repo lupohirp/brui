@@ -61,6 +61,12 @@ export class HttpClient {
       const pass = request.authBasicPassword ? Interpolator.interpolate(request.authBasicPassword, collection) : '';
       const b64 = Buffer.from(`${user}:${pass}`).toString('base64');
       headersMap['authorization'] = `Basic ${b64}`;
+    } else if (effectiveAuth === 'oauth2') {
+      const token = collection.runtimeVariables['access_token'] ||
+        (collection.activeEnvironment ? collection.environments.find(e => e.name === collection.activeEnvironment)?.variables['access_token'] : undefined);
+      if (token) {
+        headersMap['authorization'] = `Bearer ${token}`;
+      }
     }
 
     // 5. Prepare Body

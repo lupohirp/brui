@@ -1,9 +1,12 @@
 import blessed from 'neo-blessed';
 import * as path from 'node:path';
-import { BrunoCollection, BrunoFolder, BrunoRequest, HttpResponse, ConsoleLogEntry, ThemeColors } from '../types';
+import * as fs from 'node:fs';
+import { bruToJsonV2, jsonToBruV2 } from '@usebruno/lang';
+import { BrunoCollection, BrunoFolder, BrunoRequest, HttpResponse, ConsoleLogEntry, ThemeColors, OAuth2Config } from '../types';
 import { ThemeManager } from '../themes';
 import { CollectionParser, DiscoveredCollection } from '../core/parser';
 import { EnvironmentManagerModal } from './env-manager';
+import { AuthManagerModal } from './auth-manager';
 import { HttpClient } from '../core/http-client';
 import { ScriptRunner } from '../core/script-runner';
 import { OAuth2Handler } from '../core/oauth2';
@@ -44,6 +47,7 @@ export class BruiApp {
 
   private collectionModal?: blessed.Widgets.BoxElement;
   private envManagerModal?: EnvironmentManagerModal;
+  private authManagerModal?: AuthManagerModal;
   private isRunning: boolean = false;
 
   constructor(collectionPath: string, themeName: string = 'Catppuccin Mocha', initialEnv?: string) {
@@ -450,16 +454,84 @@ export class BruiApp {
         content = Interpolator.interpolate(req.bodyContent, this.collection);
       }
     } else if (this.activeRequestTab === 'auth') {
-      content = `{bold}Auth Type:{/} ${req.authType}\n`;
-      if (req.authType === 'bearer' || req.authType === 'inherit') {
-        const token = req.authBearerToken || this.collection.collectionAuthBearerToken;
-        const resolved = token ? Interpolator.interpolate(token, this.collection) : '(none)';
-        content += `{bold}Bearer Token:{/} ${resolved}\n`;
-      } else if (req.authType === 'oauth2' && req.authOAuth2) {
-        content += `{bold}Grant Type:{/} ${req.authOAuth2.grantType}\n`;
-        content += `{bold}Token URL:{/} ${req.authOAuth2.tokenUrl}\n`;
-        content += `{bold}Client ID:{/} ${req.authOAuth2.clientId}\n`;
+      const mode = req.authType;
+      const modes = ['inherit', 'none', 'bearer', 'basic', 'oauth2'] as const;
+      const modeButtons = modes.map(m => {
+        if (m === mode) {
+          return `{bold}{${t.selectionFg}-fg}{${t.accent}-bg} [ ${m.toUpperCase()} ] {/}`;
+        }
+        return `{${t.subtext}-fg}[ ${m.toUpperCase()} ]{/}`;
+      }).join('  ');
+
+      let token: string | undefined;
+      let exp: number = 0;
+      if (this.collection.activeEnvironment) {
+        const env = this.collection.environments.find(e => e.name === this.collection.activeEnvironment);
+        if (env) {
+          token = env.variables['access_token'];
+          exp = Number(env.variables['access_token_exp']) || 0;
+        }
       }
+      if (!token) {
+        token = this.collection.runtimeVariables['access_token'];
+        exp = Number(this.collection.runtimeVariables['access_token_exp']) || 0;
+      }
+
+      const now = Date.now();
+      const isExpired = exp > 0 && now > exp;
+      const expSec = exp > 0 ? Math.max(0, Math.round((exp - now) / 1000)) : undefined;
+
+      const tokenBadge = token
+        ? (isExpired
+            ? `{${t.statusError}-fg}▲ EXPIRED{/}`
+            : `{${t.statusSuccess}-fg}● ACTIVE (${expSec}s remaining){/}`)
+        : `{${t.subtext}-fg}○ No token in environment{/}`;
+
+      content = ` {bold}Auth Mode:{/}  ${modeButtons}\n\n`;
+
+      if (mode === 'inherit') {
+        const collMode = this.collection.collectionAuthType || 'none';
+        content += ` {bold}{${t.accent}-fg}Mode:{/} Inherited from collection.bru ({bold}${collMode.toUpperCase()}{/})\n`;
+        if (collMode === 'bearer') {
+          const rawTok = this.collection.collectionAuthBearerToken || '{{access_token}}';
+          const resTok = Interpolator.interpolate(rawTok, this.collection);
+          content += ` {bold}Collection Token:{/} {${t.put}-fg}${rawTok}{/}\n`;
+          content += ` {bold}Resolved Value:{/}   ${resTok ? resTok.slice(0, 50) + '...' : '{#6c7086-fg}(empty){/}'}\n`;
+        }
+        content += ` {bold}Token Status:{/}     ${tokenBadge}\n\n`;
+      } else if (mode === 'none') {
+        content += ` {${t.subtext}-fg}No authentication credentials will be sent with this request.{/}\n\n`;
+      } else if (mode === 'bearer') {
+        const rawTok = req.authBearerToken || '{{access_token}}';
+        const resTok = Interpolator.interpolate(rawTok, this.collection);
+        content += ` {bold}{${t.accent}-fg}Bearer Token:{/}  {${t.put}-fg}${rawTok}{/}\n`;
+        content += ` {bold}Resolved Value:{/} ${resTok ? resTok.slice(0, 50) + '...' : '{#6c7086-fg}(empty){/}'}\n`;
+        content += ` {bold}Token Status:{/}   ${tokenBadge}\n\n`;
+      } else if (mode === 'basic') {
+        content += ` {bold}{${t.accent}-fg}Username:{/} ${req.authBasicUser || '{#6c7086-fg}(empty){/}'}\n`;
+        content += ` {bold}{${t.accent}-fg}Password:{/} ${req.authBasicPassword ? '••••••••' : '{#6c7086-fg}(empty){/}'}\n\n`;
+      } else if (mode === 'oauth2') {
+        const o = req.authOAuth2 || { grantType: 'password', tokenUrl: '', clientId: '' };
+        content += ` {bold}{${t.accent}-fg}Grant Type:{/}   {bold}{${t.options}-fg}[${o.grantType.toUpperCase()}]{/}\n`;
+        content += ` {bold}Token URL:{/}    ${o.tokenUrl || '{#6c7086-fg}(not set){/}'}\n`;
+        content += ` {bold}Client ID:{/}    ${o.clientId || '{#6c7086-fg}(not set){/}'}\n`;
+        if (o.grantType === 'password') {
+          content += ` {bold}Username:{/}     ${o.username || '{#6c7086-fg}(not set){/}'}\n`;
+          content += ` {bold}Password:{/}     ${o.password ? '••••••••' : '{#6c7086-fg}(not set){/}'}\n`;
+        } else if (o.grantType === 'authorization_code') {
+          content += ` {bold}Auth URL:{/}     ${o.authUrl || '{#6c7086-fg}(not set){/}'}\n`;
+          content += ` {bold}Callback URL:{/} ${o.redirectUri || 'http://127.0.0.1:3000/callback'}\n`;
+          content += ` {bold}PKCE:{/}         ${o.pkce !== false ? '{#a6e3a1-fg}Enabled{/}' : '{#f38ba8-fg}Disabled{/}'}\n`;
+        }
+        content += ` {bold}Scope:{/}        ${o.scope || 'openid'}\n`;
+        content += ` {bold}Token Status:{/} ${tokenBadge}\n\n`;
+      }
+
+      content += `{bold}{${t.accent}-fg}─── Actions ─────────────────────────────────────────────────────────────{/}\n`;
+      content += ` {bold}{${t.get}-fg}[ ⚡ Click here or Press 'O' to GET ACCESS TOKEN ]{/}  \n` +
+                 ` {bold}{${t.put}-fg}[ ⚙ Press 'A' to Configure Auth Fields ]{/}  ` +
+                 `{bold}{${t.options}-fg}[ Press 'M' to Cycle Mode ]{/}  ` +
+                 `{bold}[ Press 'S' to Save ]{/}`;
     } else if (this.activeRequestTab === 'pre-script') {
       content = req.preRequestScript || '{#6c7086-fg}No pre-request script.{/}';
     } else if (this.activeRequestTab === 'post-script') {
@@ -557,14 +629,13 @@ export class BruiApp {
 
   private updateStatusBar(msg: string) {
     const t = this.getTheme();
+    const isAuthTab = this.activeRequestTab === 'auth';
+    const shortcuts = isAuthTab
+      ? `{bold}[Space]{/} Send  {bold}[O]{/} Get Token  {bold}[A]{/} Auth Config  {bold}[M]{/} Mode  {bold}[S]{/} Save  {bold}[E]{/} Env  {bold}[q]{/} Quit`
+      : `{bold}[Space]{/} Send  {bold}[C]{/} Open Coll  {bold}[O]{/} OAuth2  {bold}[E]{/} Env  {bold}[T]{/} Theme  {bold}[1-7]{/} Tabs  {bold}[q]{/} Quit`;
+
     this.statusBar.setContent(
-      ` {bold}[Space]{/} Send  ` +
-      `{bold}[C]{/} Open Coll  ` +
-      `{bold}[O]{/} OAuth2  ` +
-      `{bold}[E]{/} Env  ` +
-      `{bold}[T]{/} Theme  ` +
-      `{bold}[1-7]{/} Tabs  ` +
-      `{bold}[q]{/} Quit   ` +
+      ` ${shortcuts}   ` +
       `{right}{bold}{${t.accent}-fg}${msg}{/} `
     );
     this.screen.render();
@@ -678,6 +749,40 @@ export class BruiApp {
       }
       this.screen.render();
     });
+
+    // Mouse click on Request Content Box (Opens Auth Manager when in Auth Tab)
+    this.requestContentBox.on('click', () => {
+      if (this.activeRequestTab === 'auth') {
+        this.openAuthManagerModal();
+      }
+    });
+
+    // Hotkey [A]: Auth Manager Dialog
+    this.screen.key(['a', 'A'], () => {
+      if (this.isModalOpen()) return;
+      this.openAuthManagerModal();
+    });
+
+    // Hotkey [M]: Cycle Auth Mode (when on Auth Tab)
+    this.screen.key(['m', 'M'], () => {
+      if (this.isModalOpen()) return;
+      if (this.activeRequestTab === 'auth' && this.selectedRequest) {
+        const modes: Array<BrunoRequest['authType']> = ['inherit', 'none', 'bearer', 'basic', 'oauth2'];
+        const curIdx = modes.indexOf(this.selectedRequest.authType);
+        this.selectedRequest.authType = modes[(curIdx + 1) % modes.length];
+        this.updateHeader();
+        this.updateRequestView();
+        this.updateStatusBar(`Auth mode switched to: [${this.selectedRequest.authType.toUpperCase()}]`);
+      }
+    });
+
+    // Hotkey [S]: Save Auth to .bru file (when on Auth Tab)
+    this.screen.key(['s', 'S'], () => {
+      if (this.isModalOpen()) return;
+      if (this.activeRequestTab === 'auth' && this.selectedRequest) {
+        this.saveActiveRequestAuth();
+      }
+    });
   }
 
   private handleTreeSelection(index: number) {
@@ -702,7 +807,9 @@ export class BruiApp {
   }
 
   public isModalOpen(): boolean {
-    return !!this.collectionModal || (!!this.envManagerModal && this.envManagerModal.isOpen());
+    return !!this.collectionModal ||
+           (!!this.envManagerModal && this.envManagerModal.isOpen()) ||
+           (!!this.authManagerModal && this.authManagerModal.isOpen());
   }
 
   private openCollectionModal() {
@@ -872,43 +979,154 @@ export class BruiApp {
     }
   }
 
+  private openAuthManagerModal() {
+    const req = this.selectedRequest;
+    if (!req) {
+      this.updateStatusBar('No request selected to configure auth.');
+      return;
+    }
+    if (this.isModalOpen()) return;
+
+    this.authManagerModal = new AuthManagerModal(
+      this.screen,
+      this.collection,
+      req,
+      this.themeManager,
+      () => {
+        this.updateHeader();
+        this.updateRequestView();
+        this.updateResponseView();
+      },
+      () => {
+        this.sidebarList.focus();
+        this.screen.render();
+      }
+    );
+    this.authManagerModal.show();
+  }
+
+  private saveActiveRequestAuth() {
+    const req = this.selectedRequest;
+    if (!req) return;
+    try {
+      const filePath = req.filePath;
+      if (!fs.existsSync(filePath)) {
+        throw new Error(`Request file not found: ${filePath}`);
+      }
+
+      const raw = fs.readFileSync(filePath, 'utf8');
+      const json = bruToJsonV2(raw) as any;
+
+      if (!json.http) json.http = {};
+      json.http.auth = req.authType;
+
+      if (!json.auth) json.auth = {};
+      json.auth.mode = req.authType;
+
+      if (req.authType === 'bearer') {
+        json.auth.bearer = {
+          token: req.authBearerToken || '{{access_token}}'
+        };
+      } else if (req.authType === 'basic') {
+        json.auth.basic = {
+          username: req.authBasicUser || '',
+          password: req.authBasicPassword || ''
+        };
+      } else if (req.authType === 'oauth2' && req.authOAuth2) {
+        const o = req.authOAuth2;
+        json.auth.oauth2 = {
+          grantType: o.grantType,
+          accessTokenUrl: o.tokenUrl,
+          authorizationUrl: o.authUrl || '',
+          callbackUrl: o.redirectUri || '',
+          clientId: o.clientId,
+          clientSecret: o.clientSecret || '',
+          username: o.username || '',
+          password: o.password || '',
+          scope: o.scope || 'openid',
+          pkce: o.pkce !== false
+        };
+      }
+
+      const updated = jsonToBruV2(json);
+      fs.writeFileSync(filePath, updated, 'utf8');
+      this.updateStatusBar(`✔ Saved auth configuration to ${path.basename(filePath)}!`);
+    } catch (err: any) {
+      this.updateStatusBar(`✖ Save error: ${err.message}`);
+    }
+  }
+
   private async triggerOAuth2() {
     const req = this.selectedRequest;
-    let oauthConfig = req?.authOAuth2;
+    let oauthConfig: OAuth2Config | undefined = req?.authOAuth2;
+
+    if (!oauthConfig && this.collection.collectionAuthOAuth2) {
+      oauthConfig = this.collection.collectionAuthOAuth2;
+    }
 
     if (!oauthConfig && this.collection.activeEnvironment) {
       const env = this.collection.environments.find(e => e.name === this.collection.activeEnvironment);
       if (env) {
-        const tokenUrl = env.variables['APIGEE_HOST'] ? `${env.variables['APIGEE_HOST']}/auth/oauth/v2/token` : undefined;
+        const host = env.variables['APIGEE_HOST'] || 'https://apitest.tim.it';
         const clientId = env.variables['KC_CLIENT_ID'];
         const clientSecret = env.variables['KC_CLIENT_SECRET'];
-        if (tokenUrl && clientId) {
+        const username = env.variables['KC_USERNAME'];
+        const password = env.variables['KC_PASSWORD'];
+
+        if (clientId) {
           oauthConfig = {
-            grantType: 'authorization_code',
-            tokenUrl,
+            grantType: username ? 'password' : 'authorization_code',
+            tokenUrl: `${host}/auth/oauth/v2/token`,
+            authUrl: `${host}/auth/oauth/v2/authorize`,
+            redirectUri: 'http://127.0.0.1:3000/callback',
             clientId,
             clientSecret,
-            authUrl: env.variables['APIGEE_HOST'] ? `${env.variables['APIGEE_HOST']}/auth/oauth/v2/authorize` : undefined
+            username,
+            password,
+            scope: 'openid',
+            pkce: true
           };
         }
       }
     }
 
+    // Check if collection has an auth sub-request like "_Auth/Get Token - APP"
     if (!oauthConfig) {
-      this.updateStatusBar('No OAuth2 config found for request or environment');
+      const tokenReq = this.parser.requestMap.get('_Auth/Get Token - APP') ||
+                       this.parser.requestMap.get('_Auth/Get Token') ||
+                       this.parser.requestMap.get('Get Token');
+      if (tokenReq) {
+        this.updateStatusBar(`Running auth request: ${tokenReq.name}...`);
+        try {
+          const resp = await HttpClient.execute(tokenReq, this.collection);
+          await this.scriptRunner.runPostResponseScript(tokenReq, resp);
+          this.updateHeader();
+          this.updateRequestView();
+          this.updateStatusBar(`✔ Auth request completed: HTTP ${resp.status}`);
+          return;
+        } catch (err: any) {
+          this.updateStatusBar(`✖ Auth request error: ${err.message}`);
+          return;
+        }
+      }
+    }
+
+    if (!oauthConfig) {
+      this.openAuthManagerModal();
       return;
     }
 
-    this.updateStatusBar('Starting OAuth2 browser authentication...');
+    this.updateStatusBar(`Starting OAuth2 (${oauthConfig.grantType.toUpperCase()})...`);
     try {
       const result = await OAuth2Handler.authenticate(oauthConfig, this.collection, (msg) => {
         this.updateStatusBar(msg);
       });
       this.updateHeader();
       this.updateRequestView();
-      this.updateStatusBar(`OAuth2 success! Token saved: ${result.accessToken.slice(0, 15)}...`);
+      const expStr = result.expiresIn ? ` (Expires in ${result.expiresIn}s)` : '';
+      this.updateStatusBar(`✔ OAuth2 success! Token saved: ${result.accessToken.slice(0, 15)}...${expStr}`);
     } catch (err: any) {
-      this.updateStatusBar(`OAuth2 error: ${err.message}`);
+      this.updateStatusBar(`✖ OAuth2 error: ${err.message}`);
     }
   }
 }

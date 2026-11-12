@@ -21,9 +21,60 @@ export class OAuth2Handler {
 
     if (grantType === 'client_credentials') {
       return this.handleClientCredentials(config, collection, onProgress);
+    } else if (grantType === 'password') {
+      return this.handlePassword(config, collection, onProgress);
     } else {
       return this.handleAuthorizationCode(config, collection, onProgress);
     }
+  }
+
+  private static async handlePassword(
+    config: OAuth2Config,
+    collection: BrunoCollection,
+    onProgress?: (msg: string) => void
+  ): Promise<OAuth2Result> {
+    onProgress?.('Requesting token via OAuth2 Password Grant (ROPC)...');
+    const tokenUrl = Interpolator.interpolate(config.tokenUrl, collection);
+    const clientId = Interpolator.interpolate(config.clientId, collection);
+    const clientSecret = config.clientSecret ? Interpolator.interpolate(config.clientSecret, collection) : '';
+    const username = config.username ? Interpolator.interpolate(config.username, collection) : '';
+    const password = config.password ? Interpolator.interpolate(config.password, collection) : '';
+
+    if (!tokenUrl) throw new Error('OAuth2 Token URL is missing');
+    if (!clientId) throw new Error('OAuth2 Client ID is missing');
+    if (!username) throw new Error('OAuth2 Username is missing for Password grant');
+
+    const bodyParams = new URLSearchParams();
+    bodyParams.append('grant_type', 'password');
+    bodyParams.append('client_id', clientId);
+    if (clientSecret) bodyParams.append('client_secret', clientSecret);
+    bodyParams.append('username', username);
+    if (password) bodyParams.append('password', password);
+    if (config.scope) bodyParams.append('scope', Interpolator.interpolate(config.scope, collection));
+
+    const resp = await fetch(tokenUrl, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/x-www-form-urlencoded',
+        'Accept': 'application/json'
+      },
+      body: bodyParams.toString()
+    });
+
+    const data = await resp.json() as any;
+    if (!resp.ok) {
+      throw new Error(`OAuth2 error (${resp.status}): ${data.error_description || data.error || resp.statusText}`);
+    }
+
+    const result: OAuth2Result = {
+      accessToken: data.access_token,
+      refreshToken: data.refresh_token,
+      expiresIn: data.expires_in,
+      tokenType: data.token_type
+    };
+
+    this.saveTokenToEnvironment(result, collection);
+    return result;
   }
 
   private static async handleClientCredentials(
@@ -72,10 +123,21 @@ export class OAuth2Handler {
     collection: BrunoCollection,
     onProgress?: (msg: string) => void
   ): Promise<OAuth2Result> {
-    const port = 3000;
+    if (!config.authUrl) throw new Error('OAuth2 Authorization URL is required for Authorization Code grant');
+    if (!config.tokenUrl) throw new Error('OAuth2 Token URL is required');
+    if (!config.clientId) throw new Error('OAuth2 Client ID is required');
+
+    let port = 3000;
     const redirectUri = config.redirectUri
       ? Interpolator.interpolate(config.redirectUri, collection)
       : `http://127.0.0.1:${port}/callback`;
+
+    try {
+      const u = new URL(redirectUri);
+      if (u.port) port = parseInt(u.port, 10);
+    } catch {
+      port = 3000;
+    }
 
     // 1. Generate PKCE if enabled
     let codeVerifier: string | undefined;

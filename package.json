@@ -1,0 +1,41 @@
+{
+  "name": "brui",
+  "version": "0.1.0",
+  "description": "Fast, mouse-friendly TUI for Bruno collections with native Node.js scripts, OAuth2 browser loopback, and Catppuccin themes.",
+  "main": "src/index.ts",
+  "bin": {
+    "brui": "./bin/brui.js"
+  },
+  "keywords": [
+    "bruno",
+    "api",
+    "tui",
+    "rest",
+    "postman",
+    "oauth2",
+    "catppuccin",
+    "terminal"
+  ],
+  "author": "Paolo Chilodi",
+  "license": "MIT",
+  "scripts": {
+    "build": "tsc",
+    "start": "tsx src/index.ts",
+    "dev": "tsx src/index.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@usebruno/lang": "^0.41.0",
+    "neo-blessed": "^0.2.0",
+    "open": "^10.1.0",
+    "tsx": "^4.23.15"
+  },
+  "devDependencies": {
+    "@types/blessed": "^0.1.25",
+    "@types/node": "^22.0.0",
+    "typescript": "^5.6.0"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  }
+}

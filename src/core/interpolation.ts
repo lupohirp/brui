@@ -9,13 +9,16 @@ export class Interpolator {
   ): string {
     if (!text || typeof text !== 'string') return text;
 
-    return text.replace(/\{\{([a-zA-Z0-9_.-]+)\}\}/g, (match, varName) => {
+    return text.replace(/\{\{([a-zA-Z0-9_$.,-]+)\}\}/g, (match, varName) => {
       // 1. Built-in dynamic generators
       if (varName === '$uuid' || varName === '$guid') {
         return crypto.randomUUID();
       }
       if (varName === '$timestamp') {
         return Math.floor(Date.now() / 1000).toString();
+      }
+      if (varName === '$isoTimestamp') {
+        return new Date().toISOString();
       }
       if (varName === '$randomInt') {
         return Math.floor(Math.random() * 1000).toString();
@@ -61,12 +64,19 @@ export class Interpolator {
   ): string {
     if (!text || typeof text !== 'string') return text;
 
-    return text.replace(/\{\{([a-zA-Z0-9_$.,-]+)\}\}/g, (_match, varName) => {
-      const isDynamic = varName === '$uuid' || varName === '$guid' || varName === '$timestamp' || varName === '$randomInt';
+    const escaped = text.replace(/\{/g, '\x01').replace(/\}/g, '\x02');
+    const highlighted = escaped.replace(/\x01\x01([a-zA-Z0-9_$.,-]+)\x02\x02/g, (_match, varName) => {
+      const isDynamic =
+        varName === '$uuid' ||
+        varName === '$guid' ||
+        varName === '$timestamp' ||
+        varName === '$isoTimestamp' ||
+        varName === '$randomInt';
       const resolved = isDynamic ? '<dynamic>' : Interpolator.getVariable(varName, collection);
       const color = resolved !== undefined ? varColor : (missingColor || varColor);
-      return `{bold}{${color}-fg}{{${varName}}}{/}`;
+      return `{bold}{${color}-fg}{open}{open}${varName}{close}{close}{/${color}-fg}{/bold}`;
     });
+    return highlighted.replace(/\x01/g, '{open}').replace(/\x02/g, '{close}');
   }
 
   /**
@@ -80,24 +90,31 @@ export class Interpolator {
   ): string {
     if (!text || typeof text !== 'string') return text;
 
-    return text.replace(/\{\{([a-zA-Z0-9_$.,-]+)\}\}/g, (match, varName) => {
+    const escaped = text.replace(/\{/g, '\x01').replace(/\}/g, '\x02');
+    const interpolated = escaped.replace(/\x01\x01([a-zA-Z0-9_$.,-]+)\x02\x02/g, (_match, varName) => {
       if (varName === '$uuid' || varName === '$guid') {
-        return `{bold}{${varColor}-fg}${crypto.randomUUID()}{/}`;
+        return `{bold}{${varColor}-fg}${crypto.randomUUID()}{/${varColor}-fg}{/bold}`;
       }
       if (varName === '$timestamp') {
-        return `{bold}{${varColor}-fg}${Math.floor(Date.now() / 1000)}{/}`;
+        return `{bold}{${varColor}-fg}${Math.floor(Date.now() / 1000)}{/${varColor}-fg}{/bold}`;
+      }
+      if (varName === '$isoTimestamp') {
+        return `{bold}{${varColor}-fg}${new Date().toISOString()}{/${varColor}-fg}{/bold}`;
       }
       if (varName === '$randomInt') {
-        return `{bold}{${varColor}-fg}${Math.floor(Math.random() * 1000)}{/}`;
+        return `{bold}{${varColor}-fg}${Math.floor(Math.random() * 1000)}{/${varColor}-fg}{/bold}`;
       }
 
       const resolved = Interpolator.getVariable(varName, collection);
       if (resolved !== undefined) {
-        return `{bold}{${varColor}-fg}${resolved}{/}`;
+        const safeRes = String(resolved).replace(/\{/g, '{open}').replace(/\}/g, '{close}');
+        return `{bold}{${varColor}-fg}${safeRes}{/${varColor}-fg}{/bold}`;
       }
 
-      return `{bold}{${missingColor || varColor}-fg}${match}{/}`;
+      const errCol = missingColor || varColor;
+      return `{bold}{${errCol}-fg}{open}{open}${varName}{close}{close}{/${errCol}-fg}{/bold}`;
     });
+    return interpolated.replace(/\x01/g, '{open}').replace(/\x02/g, '{close}');
   }
 
   public static getVariable(

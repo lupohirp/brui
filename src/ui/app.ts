@@ -194,8 +194,9 @@ export class BruiApp {
       height: 5,
       tags: true,
       border: { type: 'line' },
-      mouse: true
-    });
+      mouse: true,
+      autoFocus: false
+    } as any);
 
     // 2. Left Sidebar (Tree view with folders & requests)
     this.sidebarList = blessed.list({
@@ -223,7 +224,7 @@ export class BruiApp {
       top: 5,
       left: '32%',
       width: '68%',
-      bottom: '48%',
+      bottom: '45%',
       border: { type: 'line' },
       tags: true
     });
@@ -235,8 +236,9 @@ export class BruiApp {
       right: 1,
       height: 2,
       tags: true,
-      mouse: true
-    });
+      mouse: true,
+      autoFocus: false
+    } as any);
 
     this.requestTabsBox = blessed.box({
       parent: this.requestPane,
@@ -245,17 +247,19 @@ export class BruiApp {
       right: 1,
       height: 1,
       tags: true,
-      mouse: true
-    });
+      mouse: true,
+      autoFocus: false
+    } as any);
 
     this.requestContentBox = blessed.box({
       parent: this.requestPane,
-      top: 4,
+      top: 3,
       left: 1,
       right: 1,
-      bottom: 1,
+      bottom: 0,
       tags: true,
       mouse: true,
+      autoFocus: false,
       scrollable: true,
       alwaysScroll: true,
       scrollbar: {
@@ -263,12 +267,12 @@ export class BruiApp {
         track: { bg: theme.bg },
         style: { bg: theme.selection }
       }
-    });
+    } as any);
 
     // 4. Response Pane (Bottom Right)
     this.responsePane = blessed.box({
       parent: this.screen,
-      top: '52%',
+      top: '55%',
       left: '32%',
       width: '68%',
       bottom: 2,
@@ -283,8 +287,9 @@ export class BruiApp {
       right: 1,
       height: 2,
       tags: true,
-      mouse: true
-    });
+      mouse: true,
+      autoFocus: false
+    } as any);
 
     this.responseTabsBox = blessed.box({
       parent: this.responsePane,
@@ -293,17 +298,19 @@ export class BruiApp {
       right: 1,
       height: 1,
       tags: true,
-      mouse: true
-    });
+      mouse: true,
+      autoFocus: false
+    } as any);
 
     this.responseContentBox = blessed.box({
       parent: this.responsePane,
-      top: 4,
+      top: 3,
       left: 1,
       right: 1,
-      bottom: 1,
+      bottom: 0,
       tags: true,
       mouse: true,
+      autoFocus: false,
       scrollable: true,
       alwaysScroll: true,
       scrollbar: {
@@ -311,7 +318,7 @@ export class BruiApp {
         track: { bg: theme.bg },
         style: { bg: theme.selection }
       }
-    });
+    } as any);
 
     // 5. Status Bar (Bottom)
     this.statusBar = blessed.box({
@@ -321,8 +328,9 @@ export class BruiApp {
       width: '100%',
       height: 2,
       tags: true,
-      mouse: true
-    });
+      mouse: true,
+      autoFocus: false
+    } as any);
 
     this.renderSidebar();
   }
@@ -464,16 +472,21 @@ export class BruiApp {
     const resolvedUrlColored = Interpolator.interpolateWithColor(req.url, this.collection, t.accent, t.delete);
 
     const headerLine1 =
-      ` {bold}{${badgeColor}-fg}[ ${req.method} ]{/}  {bold}${highlightedUrl}{/}${modBadge}` +
-      `{right}{bold}{${t.put}-fg}[Edit URL (U)]{/} {bold}{${t.options}-fg}[Edit (I)]{/} {bold}{${t.get}-fg}[Save (S)]{/} {bold}{${t.delete}-fg}[Revert (R)]{/}`;
-    const headerLine2 = req.url.includes('{{')
-      ? ` {${t.subtext}-fg}-> ${resolvedUrlColored}{/}`
-      : ` {${t.subtext}-fg}File: ${req.relativePath}{/}`;
+      ` {bold}{${badgeColor}-fg}[ ${req.method} ]{/}  {bold}${highlightedUrl}{/}${modBadge}`;
+    const headerLine2 =
+      ` {bold}{${t.put}-fg}[U: Edit URL]{/}  {bold}{${t.options}-fg}[I: Edit Tab]{/}  ` +
+      `{bold}{${t.get}-fg}[S: Save .bru]{/}  {bold}{${t.delete}-fg}[R: Revert]{/}` +
+      (req.url.includes('{{') ? `   {${t.subtext}-fg}-> ${resolvedUrlColored}{/}` : '');
 
     this.requestHeaderBox.setContent(`${headerLine1}\n${headerLine2}`);
 
+    const collHeaders = (this.collection.collectionHeaders || []).filter(h => h.enabled !== false);
+    const headersCountLabel = collHeaders.length > 0
+      ? `${req.headers.length}+${collHeaders.length}`
+      : `${req.headers.length}`;
+
     const tabs: Array<{ id: 'headers' | 'params' | 'body' | 'auth' | 'pre-script' | 'post-script' | 'docs'; label: string }> = [
-      { id: 'headers', label: `Headers (${req.headers.length})` },
+      { id: 'headers', label: `Headers (${headersCountLabel})` },
       { id: 'params', label: `Params (${req.params.length})` },
       { id: 'body', label: `Body (${req.bodyType})` },
       { id: 'auth', label: `Auth (${req.authType})` },
@@ -502,35 +515,48 @@ export class BruiApp {
 
     let content = '';
     if (this.activeRequestTab === 'headers') {
+      content = ` {bold}{${t.put}-fg}[ Edit / Add Headers (Press 'I' or Click) ]{/}   ` +
+                `{bold}{${t.get}-fg}[ Save .bru (Press 'S') ]{/}   ` +
+                `{bold}{${t.delete}-fg}[ Revert (Press 'R') ]{/}\n`;
+
       if (req.headers.length === 0) {
-        content = `{${t.subtext}-fg}No custom headers.{/}\n\n`;
+        content += ` {${t.subtext}-fg}No request-specific headers configured.{/}\n`;
       } else {
-        content = req.headers.map((h, i) => {
+        content += req.headers.map((h, i) => {
           const rawColored = Interpolator.highlightVariables(h.value, this.collection, t.accent, t.delete);
           const resPreview = h.value.includes('{{')
             ? `  {${t.subtext}-fg}(-> ${Interpolator.interpolateWithColor(h.value, this.collection, t.accent, t.delete)}{${t.subtext}-fg}){/}`
             : '';
-          return `${i + 1}. {bold}{${t.put}-fg}${h.name}{/}: ${rawColored}${resPreview}   {${t.put}-fg}[Edit]{/} {${t.delete}-fg}[Del]{/}`;
-        }).join('\n') + '\n\n';
+          return ` ${i + 1}. {bold}{${t.put}-fg}${h.name}{/}: ${rawColored}${resPreview}`;
+        }).join('\n') + '\n';
       }
-      content += `{bold}{${t.get}-fg}[ + Add Header (Press 'I' or Click) ]{/}   ` +
-                 `{bold}{${t.options}-fg}[ Save .bru (Press 'S') ]{/}   ` +
-                 `{bold}{${t.delete}-fg}[ Revert (Press 'R') ]{/}`;
+
+      if (collHeaders.length > 0) {
+        content += `\n {${t.subtext}-fg}--- Inherited from collection.bru (${collHeaders.length}) ---{/}\n`;
+        content += collHeaders.map(h => {
+          const rawColored = Interpolator.highlightVariables(h.value, this.collection, t.accent, t.delete);
+          const resPreview = h.value.includes('{{')
+            ? `  {${t.subtext}-fg}(-> ${Interpolator.interpolateWithColor(h.value, this.collection, t.accent, t.delete)}{${t.subtext}-fg}){/}`
+            : '';
+          return ` • {${t.subtext}-fg}${h.name}:{/} ${rawColored}${resPreview}`;
+        }).join('\n');
+      }
     } else if (this.activeRequestTab === 'params') {
+      content = ` {bold}{${t.put}-fg}[ Edit / Add Params (Press 'I' or Click) ]{/}   ` +
+                `{bold}{${t.get}-fg}[ Save .bru (Press 'S') ]{/}   ` +
+                `{bold}{${t.delete}-fg}[ Revert (Press 'R') ]{/}\n`;
+
       if (req.params.length === 0) {
-        content = `{${t.subtext}-fg}No query parameters.{/}\n\n`;
+        content += ` {${t.subtext}-fg}No query parameters configured.{/}`;
       } else {
-        content = req.params.map((p, i) => {
+        content += req.params.map((p, i) => {
           const rawColored = Interpolator.highlightVariables(p.value, this.collection, t.accent, t.delete);
           const resPreview = p.value.includes('{{')
             ? `  {${t.subtext}-fg}(-> ${Interpolator.interpolateWithColor(p.value, this.collection, t.accent, t.delete)}{${t.subtext}-fg}){/}`
             : '';
-          return `${i + 1}. {bold}{${t.patch}-fg}${p.name}{/} = ${rawColored}${resPreview}   {${t.put}-fg}[Edit]{/} {${t.delete}-fg}[Del]{/}`;
-        }).join('\n') + '\n\n';
+          return ` ${i + 1}. {bold}{${t.patch}-fg}${p.name}{/} = ${rawColored}${resPreview}`;
+        }).join('\n');
       }
-      content += `{bold}{${t.get}-fg}[ + Add Param (Press 'I' or Click) ]{/}   ` +
-                 `{bold}{${t.options}-fg}[ Save .bru (Press 'S') ]{/}   ` +
-                 `{bold}{${t.delete}-fg}[ Revert (Press 'R') ]{/}`;
     } else if (this.activeRequestTab === 'body') {
       const bTypes: Array<BrunoRequest['bodyType']> = ['none', 'json', 'text', 'formUrlEncoded', 'xml'];
       this.bodyTypeRanges = [];
@@ -550,13 +576,10 @@ export class BruiApp {
         return `{${t.subtext}-fg}[ ${label} ]{/}`;
       }).join('  ');
 
-      content = ` {bold}Body Type:{/}  ${bTypeButtons}\n`;
-      content += ` {bold}{${t.put}-fg}[ Edit Body (Press 'I' or Click) ]{/}   ` +
-                 `{bold}{${t.get}-fg}[ Save .bru (Press 'S') ]{/}   ` +
-                 `{bold}{${t.delete}-fg}[ Revert (Press 'R') ]{/}\n\n`;
+      content = ` {bold}Body Type:{/}  ${bTypeButtons}   {bold}{${t.put}-fg}[ Edit Body (Press 'I' or Click) ]{/}\n`;
 
       if (req.bodyType === 'none' || !req.bodyContent) {
-        content += `{${t.subtext}-fg}No body configured.{/}`;
+        content += ` {${t.subtext}-fg}No body configured. Press 'I' or click above to add a request body.{/}`;
       } else {
         content += Interpolator.highlightVariables(req.bodyContent, this.collection, t.accent, t.delete);
         if (req.bodyContent.includes('{{')) {
@@ -838,7 +861,7 @@ export class BruiApp {
       }
     });
 
-    // 3b. Mouse click on Request Header Box -> Method, URL, [Edit URL], [Edit], [Save], [Revert]
+    // 3b. Mouse click on Request Header Box -> Method, URL, [U: Edit URL], [I: Edit Tab], [S: Save .bru], [R: Revert]
     this.requestHeaderBox.on('click', (data: any) => {
       if (this.isModalOpen() || !this.selectedRequest) return;
       const pos = (this.requestHeaderBox as any).lpos;
@@ -846,7 +869,6 @@ export class BruiApp {
 
       const relX = data.x - pos.xi;
       const relY = data.y - pos.yi;
-      const width = pos.xl - pos.xi;
 
       if (relY === 0) {
         const methodBtnLen = this.selectedRequest.method.length + 5;
@@ -854,24 +876,20 @@ export class BruiApp {
           this.cycleActiveRequestMethod();
           return;
         }
-        // Right-aligned buttons: "[Edit URL (U)] [Edit (I)] [Save (S)] [Revert (R)]" (49 chars)
-        const rightStart = width - 49;
-        if (relX >= rightStart) {
-          const offset = relX - rightStart;
-          if (offset < 15) {
-            this.editActiveRequestUrl();
-          } else if (offset < 26) {
-            this.editActiveTab();
-          } else if (offset < 37) {
-            this.saveActiveRequest();
-          } else {
-            this.revertActiveRequest();
-          }
-          return;
-        }
         this.editActiveRequestUrl();
       } else if (relY === 1) {
-        this.editActiveRequestUrl();
+        // Line 2: " [U: Edit URL]  [I: Edit Tab]  [S: Save .bru]  [R: Revert]"
+        if (relX < 15) {
+          this.editActiveRequestUrl();
+        } else if (relX < 30) {
+          this.editActiveTab();
+        } else if (relX < 46) {
+          this.saveActiveRequest();
+        } else if (relX < 59) {
+          this.revertActiveRequest();
+        } else {
+          this.editActiveRequestUrl();
+        }
       }
     });
 
@@ -999,65 +1017,22 @@ export class BruiApp {
 
       // Common Save / Revert buttons on action lines
       if (clickedLine.includes('Save .bru') || clickedLine.includes('Save (Press')) {
-        if (clickedLine.includes('Revert') && relX > 62) {
+        if (clickedLine.includes('Revert') && relX > 72) {
           this.revertActiveRequest();
           return;
         }
-        if (clickedLine.includes('Add Header') || clickedLine.includes('Add Param') || clickedLine.includes('Edit ')) {
-          if (relX < 38) {
-            this.editActiveTab();
-          } else if (relX < 64) {
-            this.saveActiveRequest();
-          } else {
-            this.revertActiveRequest();
-          }
-          return;
-        }
-      }
-
-      if (this.activeRequestTab === 'headers') {
-        if (relY >= 0 && relY < req.headers.length) {
-          const h = req.headers[relY];
-          const cleanLine = clickedLine.replace(/\{[^}]*\}/g, '');
-          if (relX >= cleanLine.length - 6) {
-            req.headers.splice(relY, 1);
-            this.markRequestModified(req);
-            this.updateStatusBar(`Removed header: ${h.name}`);
-          } else {
-            this.openSingleLinePrompt(`Edit Header #${relY + 1} (Name: Value)`, `${h.name}: ${h.value}`, (val) => {
-              const sep = val.indexOf(':');
-              if (sep > 0) {
-                h.name = val.slice(0, sep).trim();
-                h.value = val.slice(sep + 1).trim();
-                this.markRequestModified(req);
-                this.updateStatusBar(`Updated header: ${h.name}`);
-              }
-            });
-          }
+        if (relX < 46) {
+          this.editActiveTab();
+        } else if (relX < 72) {
+          this.saveActiveRequest();
+        } else {
+          this.revertActiveRequest();
         }
         return;
       }
 
-      if (this.activeRequestTab === 'params') {
-        if (relY >= 0 && relY < req.params.length) {
-          const p = req.params[relY];
-          const cleanLine = clickedLine.replace(/\{[^}]*\}/g, '');
-          if (relX >= cleanLine.length - 6) {
-            req.params.splice(relY, 1);
-            this.markRequestModified(req);
-            this.updateStatusBar(`Removed param: ${p.name}`);
-          } else {
-            this.openSingleLinePrompt(`Edit Param #${relY + 1} (key=value)`, `${p.name}=${p.value}`, (val) => {
-              const sep = val.indexOf('=');
-              if (sep > 0) {
-                p.name = val.slice(0, sep).trim();
-                p.value = val.slice(sep + 1).trim();
-                this.markRequestModified(req);
-                this.updateStatusBar(`Updated param: ${p.name}`);
-              }
-            });
-          }
-        }
+      if (this.activeRequestTab === 'headers' || this.activeRequestTab === 'params') {
+        this.editActiveTab();
         return;
       }
 
@@ -1068,8 +1043,8 @@ export class BruiApp {
             req.bodyType = hitBt.id;
             this.markRequestModified(req);
             this.updateStatusBar(`Body type set to: ${hitBt.id}`);
+            return;
           }
-          return;
         }
         this.editActiveTab();
         return;
@@ -1181,36 +1156,61 @@ export class BruiApp {
     if (!req) return;
 
     if (this.activeRequestTab === 'headers') {
-      this.openSingleLinePrompt('Add Header (Format: Header-Name: value)', '', (val) => {
-        const sep = val.indexOf(':');
-        if (sep > 0) {
-          const name = val.slice(0, sep).trim();
-          const value = val.slice(sep + 1).trim();
-          req.headers.push({ name, value, enabled: true });
+      const initialHeaders = req.headers.map(h => `${h.name}: ${h.value}`).join('\n');
+      this.openMultiLineEditor(
+        `Edit Headers for [${req.name}] (One per line: Header-Name: value)`,
+        initialHeaders,
+        (val) => {
+          const parsedHeaders = val
+            .split(/\r?\n/)
+            .map(l => l.trim())
+            .filter(l => l.length > 0)
+            .map(l => {
+              const sep = l.indexOf(':');
+              if (sep === -1) return { name: l.trim(), value: '', enabled: true };
+              return {
+                name: l.slice(0, sep).trim(),
+                value: l.slice(sep + 1).trim(),
+                enabled: true
+              };
+            })
+            .filter(h => h.name.length > 0);
+          req.headers = parsedHeaders;
           this.markRequestModified(req);
-          this.updateStatusBar(`Added header: ${name}`);
-        } else {
-          this.updateStatusBar('Invalid header format. Use Name: Value');
+          this.updateStatusBar(`Updated ${req.headers.length} header(s) (Press [S] to save or [R] to revert)`);
         }
-      });
+      );
     } else if (this.activeRequestTab === 'params') {
-      this.openSingleLinePrompt('Add Query Param (Format: key=value)', '', (val) => {
-        const sep = val.indexOf('=');
-        if (sep > 0) {
-          const name = val.slice(0, sep).trim();
-          const value = val.slice(sep + 1).trim();
-          req.params.push({ name, value, enabled: true });
+      const initialParams = req.params.map(p => `${p.name}=${p.value}`).join('\n');
+      this.openMultiLineEditor(
+        `Edit Query Params for [${req.name}] (One per line: key=value)`,
+        initialParams,
+        (val) => {
+          const parsedParams = val
+            .split(/\r?\n/)
+            .map(l => l.trim())
+            .filter(l => l.length > 0)
+            .map(l => {
+              const sep = l.indexOf('=');
+              if (sep === -1) return { name: l.trim(), value: '', enabled: true };
+              return {
+                name: l.slice(0, sep).trim(),
+                value: l.slice(sep + 1).trim(),
+                enabled: true
+              };
+            })
+            .filter(p => p.name.length > 0);
+          req.params = parsedParams;
           this.markRequestModified(req);
-          this.updateStatusBar(`Added query param: ${name}`);
-        } else {
-          this.updateStatusBar('Invalid param format. Use key=value');
+          this.updateStatusBar(`Updated ${req.params.length} param(s) (Press [S] to save or [R] to revert)`);
         }
-      });
+      );
     } else if (this.activeRequestTab === 'body') {
       if (req.bodyType === 'none') {
         req.bodyType = 'json';
       }
-      this.openMultiLineEditor(`Edit Request Body (${req.bodyType.toUpperCase()})`, req.bodyContent || '', (newBody) => {
+      const defaultBody = req.bodyContent || (req.bodyType === 'json' ? '{\n  \n}' : '');
+      this.openMultiLineEditor(`Edit Request Body (${req.bodyType.toUpperCase()})`, defaultBody, (newBody) => {
         req.bodyContent = newBody;
         this.markRequestModified(req);
         this.updateStatusBar(`Body updated (Press [S] to save or [R] to revert)`);
@@ -1239,92 +1239,19 @@ export class BruiApp {
   }
 
   private openSingleLinePrompt(title: string, initialValue: string, onSubmit: (val: string) => void) {
-    if (this.isModalOpen()) return;
-    const t = this.getTheme();
-
-    this.editorModal = blessed.box({
-      parent: this.screen,
-      top: 'center',
-      left: 'center',
-      width: '70%',
-      height: 7,
-      border: { type: 'line' },
-      style: {
-        bg: t.surface,
-        fg: t.fg,
-        border: { fg: t.accent }
-      },
-      tags: true,
-      mouse: true
-    });
-
-    blessed.box({
-      parent: this.editorModal,
-      top: 0,
-      left: 1,
-      right: 1,
-      height: 1,
-      content: `{bold}{${t.accent}-fg}${title}{/}`,
-      style: { bg: t.surface, fg: t.fg },
-      tags: true
-    });
-
-    const input = blessed.textbox({
-      parent: this.editorModal,
-      top: 2,
-      left: 1,
-      right: 1,
-      height: 1,
-      inputOnFocus: true,
-      keys: true,
-      mouse: true,
-      style: {
-        bg: t.bg,
-        fg: t.fg,
-        focus: { bg: t.bg, fg: t.fg }
-      }
-    });
-
-    blessed.box({
-      parent: this.editorModal,
-      top: 4,
-      left: 1,
-      right: 1,
-      height: 1,
-      content: `{${t.subtext}-fg}[Enter] Apply   [Esc] Cancel   (Supports {{VAR}} placeholders){/}`,
-      style: { bg: t.surface, fg: t.subtext },
-      tags: true
-    });
-
-    const closePrompt = () => {
-      if (this.editorModal) {
-        this.editorModal.destroy();
-        this.editorModal = undefined;
-        this.sidebarList.focus();
-        this.screen.render();
-      }
-    };
-
-    input.setValue(initialValue);
-
-    input.on('submit', (val: string) => {
-      closePrompt();
-      onSubmit(val);
-    });
-
-    input.on('cancel', () => {
-      closePrompt();
-    });
-
-    input.key(['escape'], () => {
-      closePrompt();
-    });
-
-    input.focus();
-    this.screen.render();
+    this.openTextEditorModal(title, initialValue, false, onSubmit);
   }
 
   private openMultiLineEditor(title: string, initialValue: string, onSubmit: (val: string) => void) {
+    this.openTextEditorModal(title, initialValue, true, onSubmit);
+  }
+
+  private openTextEditorModal(
+    title: string,
+    initialValue: string,
+    multiline: boolean,
+    onSubmit: (val: string) => void
+  ) {
     if (this.isModalOpen()) return;
     const t = this.getTheme();
 
@@ -1332,8 +1259,8 @@ export class BruiApp {
       parent: this.screen,
       top: 'center',
       left: 'center',
-      width: '80%',
-      height: '75%',
+      width: multiline ? '82%' : '72%',
+      height: multiline ? '76%' : 9,
       border: { type: 'line' },
       style: {
         bg: t.surface,
@@ -1341,14 +1268,15 @@ export class BruiApp {
         border: { fg: t.accent }
       },
       tags: true,
-      mouse: true
-    });
+      mouse: true,
+      autoFocus: false
+    } as any);
 
     blessed.box({
       parent: this.editorModal,
       top: 0,
       left: 1,
-      right: 28,
+      right: 26,
       height: 1,
       content: `{bold}{${t.accent}-fg}${title}{/}`,
       style: { bg: t.surface, fg: t.fg },
@@ -1364,8 +1292,9 @@ export class BruiApp {
       content: `{bold}{${t.get}-fg}[Apply C-s]{/}`,
       style: { bg: t.surface, fg: t.get },
       tags: true,
-      mouse: true
-    });
+      mouse: true,
+      autoFocus: false
+    } as any);
 
     const cancelBtn = blessed.box({
       parent: this.editorModal,
@@ -1376,21 +1305,21 @@ export class BruiApp {
       content: `{bold}{${t.delete}-fg}[X Cancel]{/}`,
       style: { bg: t.surface, fg: t.delete },
       tags: true,
-      mouse: true
-    });
+      mouse: true,
+      autoFocus: false
+    } as any);
 
-    const textarea = blessed.textarea({
+    const editorBox = blessed.box({
       parent: this.editorModal,
-      top: 2,
+      top: 1,
       left: 1,
       right: 1,
       bottom: 2,
-      inputOnFocus: true,
-      keys: true,
+      border: { type: 'line' },
+      tags: true,
       mouse: true,
       scrollable: true,
       alwaysScroll: true,
-      border: { type: 'line' },
       style: {
         bg: t.bg,
         fg: t.fg,
@@ -1398,18 +1327,113 @@ export class BruiApp {
       }
     });
 
+    const previewBox = blessed.box({
+      parent: this.editorModal,
+      bottom: 1,
+      left: 1,
+      right: 1,
+      height: 1,
+      tags: true,
+      style: { bg: t.surface, fg: t.subtext }
+    });
+
+    const helpText = multiline
+      ? `{${t.subtext}-fg}[Type] Edit   [Arrows] Move   [Enter] New Line   {bold}{${t.get}-fg}[Ctrl+S / Click Apply]{/} Confirm   {bold}{${t.delete}-fg}[Esc]{/} Cancel{/}`
+      : `{${t.subtext}-fg}[Type] Edit   [Left/Right] Move   {bold}{${t.get}-fg}[Enter / Ctrl+S / Click Apply]{/} Confirm   {bold}{${t.delete}-fg}[Esc]{/} Cancel{/}`;
+
     blessed.box({
       parent: this.editorModal,
       bottom: 0,
       left: 1,
       right: 1,
       height: 1,
-      content: `{${t.subtext}-fg}[Ctrl+S] or Click [Apply C-s] to confirm changes   [Esc] or Click [X Cancel] to discard{/}`,
+      content: helpText,
       style: { bg: t.surface, fg: t.subtext },
       tags: true
     });
 
+    let text = initialValue || '';
+    let cursor = text.length;
+    let editorKeyHandler: ((ch: any, key: any) => void) | undefined;
+
+    const escapeTags = (s: string) => s.replace(/\{/g, '{open}').replace(/\}/g, '{close}');
+
+    const renderLineWithCursor = (line: string, col: number | null): string => {
+      if (col === null) {
+        const escaped = line.replace(/\{/g, '\x01').replace(/\}/g, '\x02');
+        const highlighted = escaped.replace(/\x01\x01([a-zA-Z0-9_$.,-]+)\x02\x02/g, (_m, varName) => {
+          const isDyn = varName.startsWith('$');
+          const resolved = isDyn ? '<dynamic>' : Interpolator.getVariable(varName, this.collection);
+          const c = resolved !== undefined ? t.accent : t.delete;
+          return `{bold}{${c}-fg}{open}{open}${varName}{close}{close}{/${c}-fg}{/bold}`;
+        });
+        return highlighted.replace(/\x01/g, '{open}').replace(/\x02/g, '{close}');
+      }
+
+      const before = escapeTags(line.slice(0, col));
+      const atChar = col < line.length ? escapeTags(line[col]) : ' ';
+      const after = col < line.length ? escapeTags(line.slice(col + 1)) : '';
+      return `${before}{inverse}${atChar}{/inverse}${after}`;
+    };
+
+    const renderEditor = () => {
+      const lines = text.split('\n');
+      let rem = cursor;
+      let curRow = 0;
+      let curCol = 0;
+      for (let i = 0; i < lines.length; i++) {
+        if (rem <= lines[i].length) {
+          curRow = i;
+          curCol = rem;
+          break;
+        }
+        rem -= lines[i].length + 1;
+      }
+
+      const renderedLines = lines.map((line, idx) => {
+        const linePrefix = multiline
+          ? `{${t.subtext}-fg}${String(idx + 1).padStart(2, ' ')} │ {/}`
+          : ' ';
+        const body = renderLineWithCursor(line, idx === curRow ? curCol : null);
+        return `${linePrefix}${body}`;
+      });
+
+      editorBox.setContent(renderedLines.join('\n'));
+
+      if (multiline) {
+        const pos = (editorBox as any).lpos;
+        const visH = pos ? Math.max(1, (pos.yl - pos.yi) - 2) : 10;
+        if (curRow >= visH) {
+          editorBox.setScroll(curRow - visH + 2);
+        } else {
+          editorBox.setScroll(0);
+        }
+      }
+
+      // Live variable preview bar
+      const varMatches = Array.from(text.matchAll(/\{\{([a-zA-Z0-9_$.,-]+)\}\}/g)).map(m => m[1]);
+      const uniqueVars = Array.from(new Set(varMatches));
+      if (uniqueVars.length > 0) {
+        const previews = uniqueVars.map(v => {
+          const val = v.startsWith('$') ? '<dynamic>' : Interpolator.getVariable(v, this.collection);
+          if (val !== undefined) {
+            return `{bold}{${t.accent}-fg}{open}{open}${v}{close}{close}{/} = {bold}{${t.accent}-fg}${escapeTags(val.slice(0, 35))}{/}`;
+          }
+          return `{bold}{${t.delete}-fg}{open}{open}${v}{close}{close} (unresolved){/}`;
+        }).join('   ');
+        previewBox.setContent(` {${t.subtext}-fg}Vars:{/} ${previews}`);
+      } else {
+        previewBox.setContent(` {${t.subtext}-fg}Tip: Use {bold}{${t.accent}-fg}{open}{open}VAR_NAME{close}{close}{/}{${t.subtext}-fg} to reference active environment variables.{/}`);
+      }
+
+      this.screen.render();
+    };
+
     const closeEditor = () => {
+      if (editorKeyHandler) {
+        this.screen.removeListener('keypress', editorKeyHandler);
+        editorKeyHandler = undefined;
+      }
       if (this.editorModal) {
         this.editorModal.destroy();
         this.editorModal = undefined;
@@ -1419,12 +1443,10 @@ export class BruiApp {
     };
 
     const finishSave = () => {
-      const val = textarea.getValue();
+      const finalVal = text;
       closeEditor();
-      onSubmit(val);
+      onSubmit(finalVal);
     };
-
-    textarea.setValue(initialValue);
 
     applyBtn.on('click', () => {
       finishSave();
@@ -1434,16 +1456,123 @@ export class BruiApp {
       closeEditor();
     });
 
-    textarea.key(['C-s'], () => {
-      finishSave();
-    });
+    this.editorModal.setFront();
+    this.editorModal.focus();
+    renderEditor();
 
-    textarea.key(['escape'], () => {
-      closeEditor();
-    });
+    // Defer attaching keypress listener by 1 tick so the opening key ('i' or 'u') is not inserted into the text
+    setImmediate(() => {
+      if (!this.editorModal) return;
+      editorKeyHandler = (ch: any, key: any) => {
+        if (!this.editorModal) return;
+        const kName = key?.name || '';
 
-    textarea.focus();
-    this.screen.render();
+        if (kName === 'escape') {
+          closeEditor();
+          return;
+        }
+
+        if ((key?.ctrl && kName === 's') || kName === 'f2') {
+          finishSave();
+          return;
+        }
+
+        if (kName === 'return') {
+          return;
+        }
+
+        if (kName === 'enter') {
+          if (!multiline) {
+            finishSave();
+          } else {
+            text = text.slice(0, cursor) + '\n' + text.slice(cursor);
+            cursor += 1;
+            renderEditor();
+          }
+          return;
+        }
+
+        if (kName === 'backspace') {
+          if (cursor > 0) {
+            text = text.slice(0, cursor - 1) + text.slice(cursor);
+            cursor -= 1;
+            renderEditor();
+          }
+          return;
+        }
+
+        if (kName === 'delete') {
+          if (cursor < text.length) {
+            text = text.slice(0, cursor) + text.slice(cursor + 1);
+            renderEditor();
+          }
+          return;
+        }
+
+        if (kName === 'left') {
+          if (cursor > 0) {
+            cursor -= 1;
+            renderEditor();
+          }
+          return;
+        }
+
+        if (kName === 'right') {
+          if (cursor < text.length) {
+            cursor += 1;
+            renderEditor();
+          }
+          return;
+        }
+
+        if (kName === 'home' || (key?.ctrl && kName === 'a')) {
+          const lineStart = text.lastIndexOf('\n', cursor - 1) + 1;
+          cursor = lineStart;
+          renderEditor();
+          return;
+        }
+
+        if (kName === 'end' || (key?.ctrl && kName === 'e')) {
+          const nextNl = text.indexOf('\n', cursor);
+          cursor = nextNl === -1 ? text.length : nextNl;
+          renderEditor();
+          return;
+        }
+
+        if (multiline && (kName === 'up' || kName === 'down')) {
+          const lines = text.split('\n');
+          let rem = cursor;
+          let curRow = 0;
+          let curCol = 0;
+          for (let i = 0; i < lines.length; i++) {
+            if (rem <= lines[i].length) {
+              curRow = i;
+              curCol = rem;
+              break;
+            }
+            rem -= lines[i].length + 1;
+          }
+          const targetRow = kName === 'up' ? Math.max(0, curRow - 1) : Math.min(lines.length - 1, curRow + 1);
+          const targetCol = Math.min(curCol, lines[targetRow].length);
+          let newCursor = 0;
+          for (let i = 0; i < targetRow; i++) {
+            newCursor += lines[i].length + 1;
+          }
+          newCursor += targetCol;
+          cursor = newCursor;
+          renderEditor();
+          return;
+        }
+
+        if (ch && !key?.ctrl && !key?.meta && !/^[\x00-\x1f\x7f]$/.test(ch)) {
+          text = text.slice(0, cursor) + ch + text.slice(cursor);
+          cursor += ch.length;
+          renderEditor();
+        }
+      };
+
+      this.screen.on('keypress', editorKeyHandler);
+    });
   }
 
   private handleTreeSelection(index: number) {

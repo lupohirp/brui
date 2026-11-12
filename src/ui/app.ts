@@ -35,12 +35,17 @@ export class BruiApp {
   private requestTabRanges: Array<{ id: 'headers' | 'params' | 'body' | 'auth' | 'pre-script' | 'post-script' | 'docs'; start: number; end: number }> = [];
   private responseTabRanges: Array<{ id: 'body' | 'headers' | 'console'; start: number; end: number }> = [];
   private authModeRanges: Array<{ id: BrunoRequest['authType']; start: number; end: number }> = [];
+  private bodyTypeRanges: Array<{ id: BrunoRequest['bodyType']; start: number; end: number }> = [];
+
+  private modifiedRequests: Set<string> = new Set();
+  private isUpdatingSidebar: boolean = false;
 
   // UI Widgets
   private screen!: blessed.Widgets.Screen;
   private headerBox!: blessed.Widgets.BoxElement;
   private sidebarList!: blessed.Widgets.ListElement;
   private requestPane!: blessed.Widgets.BoxElement;
+  private requestHeaderBox!: blessed.Widgets.BoxElement;
   private requestTabsBox!: blessed.Widgets.BoxElement;
   private requestContentBox!: blessed.Widgets.BoxElement;
   private responsePane!: blessed.Widgets.BoxElement;
@@ -50,6 +55,7 @@ export class BruiApp {
   private statusBar!: blessed.Widgets.BoxElement;
 
   private collectionModal?: blessed.Widgets.BoxElement;
+  private editorModal?: blessed.Widgets.BoxElement;
   private envManagerModal?: EnvironmentManagerModal;
   private authManagerModal?: AuthManagerModal;
   private isRunning: boolean = false;
@@ -71,12 +77,17 @@ export class BruiApp {
       }
     }
     this.scriptRunner = new ScriptRunner(this.collection, this.parser.requestMap);
+    this.modifiedRequests.clear();
 
-    // Expand top-level folders by default
+    // Expand all folders by default so every API is immediately visible and clickable
     this.expandedFolders.clear();
-    for (const f of this.collection.folders) {
-      this.expandedFolders.add(f.id);
-    }
+    const expandAll = (folders: BrunoFolder[]) => {
+      for (const f of folders) {
+        this.expandedFolders.add(f.id);
+        expandAll(f.folders);
+      }
+    };
+    expandAll(this.collection.folders);
 
     this.rebuildTree();
 
@@ -217,6 +228,16 @@ export class BruiApp {
       tags: true
     });
 
+    this.requestHeaderBox = blessed.box({
+      parent: this.requestPane,
+      top: 0,
+      left: 1,
+      right: 1,
+      height: 2,
+      tags: true,
+      mouse: true
+    });
+
     this.requestTabsBox = blessed.box({
       parent: this.requestPane,
       top: 2,
@@ -330,6 +351,9 @@ export class BruiApp {
     this.requestPane.style.fg = t.fg;
     this.requestPane.style.border.fg = t.border;
 
+    this.requestHeaderBox.style.bg = t.bg;
+    this.requestHeaderBox.style.fg = t.fg;
+
     this.requestTabsBox.style.bg = t.bg;
     this.requestTabsBox.style.fg = t.fg;
 
@@ -379,7 +403,7 @@ export class BruiApp {
     const line2 = ` ${dog2}  {${t.subtext}-fg}Collection [C]:{/} {bold}{${t.put}-fg}[${this.collection.name}]{/}   ` +
                   `{${t.subtext}-fg}Env [E]:{/} {bold}{${t.options}-fg}[${envName}]{/}   ` +
                   `{${t.subtext}-fg}Auth [A]:{/} ${authStatus}`;
-    const line3 = ` ${dog3}  {${t.subtext}-fg}[Space] Send   [O] OAuth2 Token   [1-7] Tabs   [Tab] Focus   [q] Quit{/}`;
+    const line3 = ` ${dog3}  {${t.subtext}-fg}[Space] Send  [U] URL  [I] Edit Tab  [S] Save .bru  [R] Revert  [O] OAuth2{/}`;
 
     this.headerBox.setContent(`${line1}\n${line2}\n${line3}`);
   }
@@ -403,11 +427,17 @@ export class BruiApp {
         else if (req.method === 'PATCH') badgeColor = t.patch;
         else if (req.method === 'DELETE') badgeColor = t.delete;
 
-        items.push(`${indent} {bold}{${badgeColor}-fg}${req.method.padEnd(5)}{/} ${req.name}`);
+        const modStar = this.modifiedRequests.has(req.id) ? ` {bold}{${t.options}-fg}*{/}` : '';
+        items.push(`${indent} {bold}{${badgeColor}-fg}${req.method.padEnd(5)}{/} ${req.name}${modStar}`);
       }
     }
 
+    this.isUpdatingSidebar = true;
     this.sidebarList.setItems(items);
+    if (this.selectedTreeIndex >= 0 && this.selectedTreeIndex < items.length) {
+      (this.sidebarList as any).select(this.selectedTreeIndex);
+    }
+    this.isUpdatingSidebar = false;
     this.screen.render();
   }
 
@@ -415,7 +445,7 @@ export class BruiApp {
     const t = this.getTheme();
     const req = this.selectedRequest;
     if (!req) {
-      this.requestPane.setContent(' No request selected. Expand a folder or select a request.');
+      this.requestHeaderBox.setContent(' No request selected. Expand a folder or select a request.');
       this.requestTabsBox.setContent('');
       this.requestContentBox.setContent('');
       this.screen.render();
@@ -428,11 +458,23 @@ export class BruiApp {
     else if (req.method === 'PATCH') badgeColor = t.patch;
     else if (req.method === 'DELETE') badgeColor = t.delete;
 
-    const interpolatedUrl = Interpolator.interpolate(req.url, this.collection);
+    const isDirty = this.modifiedRequests.has(req.id);
+    const modBadge = isDirty
+      ? ` {bold}{${t.options}-fg}[* MODIFIED]{/}`
+      : '';
 
-    this.requestPane.setContent(
-      ` {bold}{${badgeColor}-fg}${req.method}{/}  {bold}${interpolatedUrl}{/}`
-    );
+    // Highlight {{VAR_1}} in theme's accent color (Catppuccin Mauve/Violet #cba6f7)
+    const highlightedUrl = Interpolator.highlightVariables(req.url, this.collection, t.accent, t.delete);
+    const resolvedUrlColored = Interpolator.interpolateWithColor(req.url, this.collection, t.accent, t.delete);
+
+    const headerLine1 =
+      ` {bold}{${badgeColor}-fg}[ ${req.method} ]{/}  {bold}${highlightedUrl}{/}${modBadge}` +
+      `{right}{bold}{${t.put}-fg}[Edit URL (U)]{/} {bold}{${t.options}-fg}[Edit (I)]{/} {bold}{${t.get}-fg}[Save (S)]{/} {bold}{${t.delete}-fg}[Revert (R)]{/}`;
+    const headerLine2 = req.url.includes('{{')
+      ? ` {${t.subtext}-fg}-> ${resolvedUrlColored}{/}`
+      : ` {${t.subtext}-fg}File: ${req.relativePath}{/}`;
+
+    this.requestHeaderBox.setContent(`${headerLine1}\n${headerLine2}`);
 
     const tabs: Array<{ id: 'headers' | 'params' | 'body' | 'auth' | 'pre-script' | 'post-script' | 'docs'; label: string }> = [
       { id: 'headers', label: `Headers (${req.headers.length})` },
@@ -464,26 +506,67 @@ export class BruiApp {
 
     let content = '';
     if (this.activeRequestTab === 'headers') {
-      if (req.headers.length === 0) content = '{#6c7086-fg}No custom headers.{/}';
-      else {
-        content = req.headers.map(h => {
-          const val = Interpolator.interpolate(h.value, this.collection);
-          return `{bold}{#89b4fa-fg}${h.name}{/}: {#cdd6f4-fg}${val}{/}`;
-        }).join('\n');
-      }
-    } else if (this.activeRequestTab === 'params') {
-      if (req.params.length === 0) content = '{#6c7086-fg}No query parameters.{/}';
-      else {
-        content = req.params.map(p => {
-          const val = Interpolator.interpolate(p.value, this.collection);
-          return `{bold}{#94e2d5-fg}${p.name}{/} = {#cdd6f4-fg}${val}{/}`;
-        }).join('\n');
-      }
-    } else if (this.activeRequestTab === 'body') {
-      if (req.bodyType === 'none' || !req.bodyContent) {
-        content = '{#6c7086-fg}No body configured.{/}';
+      if (req.headers.length === 0) {
+        content = `{${t.subtext}-fg}No custom headers.{/}\n\n`;
       } else {
-        content = Interpolator.interpolate(req.bodyContent, this.collection);
+        content = req.headers.map((h, i) => {
+          const rawColored = Interpolator.highlightVariables(h.value, this.collection, t.accent, t.delete);
+          const resPreview = h.value.includes('{{')
+            ? `  {${t.subtext}-fg}(-> ${Interpolator.interpolateWithColor(h.value, this.collection, t.accent, t.delete)}{${t.subtext}-fg}){/}`
+            : '';
+          return `${i + 1}. {bold}{${t.put}-fg}${h.name}{/}: ${rawColored}${resPreview}   {${t.put}-fg}[Edit]{/} {${t.delete}-fg}[Del]{/}`;
+        }).join('\n') + '\n\n';
+      }
+      content += `{bold}{${t.get}-fg}[ + Add Header (Press 'I' or Click) ]{/}   ` +
+                 `{bold}{${t.options}-fg}[ Save .bru (Press 'S') ]{/}   ` +
+                 `{bold}{${t.delete}-fg}[ Revert (Press 'R') ]{/}`;
+    } else if (this.activeRequestTab === 'params') {
+      if (req.params.length === 0) {
+        content = `{${t.subtext}-fg}No query parameters.{/}\n\n`;
+      } else {
+        content = req.params.map((p, i) => {
+          const rawColored = Interpolator.highlightVariables(p.value, this.collection, t.accent, t.delete);
+          const resPreview = p.value.includes('{{')
+            ? `  {${t.subtext}-fg}(-> ${Interpolator.interpolateWithColor(p.value, this.collection, t.accent, t.delete)}{${t.subtext}-fg}){/}`
+            : '';
+          return `${i + 1}. {bold}{${t.patch}-fg}${p.name}{/} = ${rawColored}${resPreview}   {${t.put}-fg}[Edit]{/} {${t.delete}-fg}[Del]{/}`;
+        }).join('\n') + '\n\n';
+      }
+      content += `{bold}{${t.get}-fg}[ + Add Param (Press 'I' or Click) ]{/}   ` +
+                 `{bold}{${t.options}-fg}[ Save .bru (Press 'S') ]{/}   ` +
+                 `{bold}{${t.delete}-fg}[ Revert (Press 'R') ]{/}`;
+    } else if (this.activeRequestTab === 'body') {
+      const bTypes: Array<BrunoRequest['bodyType']> = ['none', 'json', 'text', 'formUrlEncoded', 'xml'];
+      this.bodyTypeRanges = [];
+      let bColOffset = 13; // " Body Type:  " is 13 chars
+      const bTypeButtons = bTypes.map(bt => {
+        const label = bt.toUpperCase();
+        const visibleLen = label.length + 4;
+        this.bodyTypeRanges.push({
+          id: bt,
+          start: bColOffset,
+          end: bColOffset + visibleLen - 1
+        });
+        bColOffset += visibleLen + 2;
+        if (bt === req.bodyType) {
+          return `{bold}{${t.selectionFg}-fg}{${t.accent}-bg}[ ${label} ]{/}{${t.bg}-bg}`;
+        }
+        return `{${t.subtext}-fg}[ ${label} ]{/}`;
+      }).join('  ');
+
+      content = ` {bold}Body Type:{/}  ${bTypeButtons}\n`;
+      content += ` {bold}{${t.put}-fg}[ Edit Body (Press 'I' or Click) ]{/}   ` +
+                 `{bold}{${t.get}-fg}[ Save .bru (Press 'S') ]{/}   ` +
+                 `{bold}{${t.delete}-fg}[ Revert (Press 'R') ]{/}\n\n`;
+
+      if (req.bodyType === 'none' || !req.bodyContent) {
+        content += `{${t.subtext}-fg}No body configured.{/}`;
+      } else {
+        content += Interpolator.highlightVariables(req.bodyContent, this.collection, t.accent, t.delete);
+        if (req.bodyContent.includes('{{')) {
+          content += `\n\n{${t.subtext}-fg}--- Resolved Body Preview ---{/}\n`;
+          content += Interpolator.interpolateWithColor(req.bodyContent, this.collection, t.accent, t.delete);
+        }
       }
     } else if (this.activeRequestTab === 'auth') {
       const mode = req.authType;
@@ -536,8 +619,8 @@ export class BruiApp {
         if (collMode === 'bearer') {
           const rawTok = this.collection.collectionAuthBearerToken || '{{access_token}}';
           const resTok = Interpolator.interpolate(rawTok, this.collection);
-          content += ` {bold}Collection Token:{/} {${t.put}-fg}${rawTok}{/}\n`;
-          content += ` {bold}Resolved Value:{/}   ${resTok ? resTok.slice(0, 50) + '...' : '{#6c7086-fg}(empty){/}'}\n`;
+          content += ` {bold}Collection Token:{/} ${Interpolator.highlightVariables(rawTok, this.collection, t.accent, t.delete)}\n`;
+          content += ` {bold}Resolved Value:{/}   {${t.accent}-fg}${resTok ? resTok.slice(0, 50) + '...' : '{#6c7086-fg}(empty){/}'}{/}\n`;
         }
         content += ` {bold}Token Status:{/}     ${tokenBadge}\n\n`;
       } else if (mode === 'none') {
@@ -545,22 +628,22 @@ export class BruiApp {
       } else if (mode === 'bearer') {
         const rawTok = req.authBearerToken || '{{access_token}}';
         const resTok = Interpolator.interpolate(rawTok, this.collection);
-        content += ` {bold}{${t.accent}-fg}Bearer Token:{/}  {${t.put}-fg}${rawTok}{/}\n`;
-        content += ` {bold}Resolved Value:{/} ${resTok ? resTok.slice(0, 50) + '...' : '{#6c7086-fg}(empty){/}'}\n`;
+        content += ` {bold}{${t.accent}-fg}Bearer Token:{/}  ${Interpolator.highlightVariables(rawTok, this.collection, t.accent, t.delete)}\n`;
+        content += ` {bold}Resolved Value:{/} {${t.accent}-fg}${resTok ? resTok.slice(0, 50) + '...' : '{#6c7086-fg}(empty){/}'}{/}\n`;
         content += ` {bold}Token Status:{/}   ${tokenBadge}\n\n`;
       } else if (mode === 'basic') {
-        content += ` {bold}{${t.accent}-fg}Username:{/} ${req.authBasicUser || '{#6c7086-fg}(empty){/}'}\n`;
+        content += ` {bold}{${t.accent}-fg}Username:{/} ${Interpolator.highlightVariables(req.authBasicUser || '', this.collection, t.accent, t.delete) || '{#6c7086-fg}(empty){/}'}\n`;
         content += ` {bold}{${t.accent}-fg}Password:{/} ${req.authBasicPassword ? '********' : '{#6c7086-fg}(empty){/}'}\n\n`;
       } else if (mode === 'oauth2') {
         const o = req.authOAuth2 || { grantType: 'password', tokenUrl: '', clientId: '' };
         content += ` {bold}{${t.accent}-fg}Grant Type:{/}   {bold}{${t.options}-fg}[${o.grantType.toUpperCase()}]{/}\n`;
-        content += ` {bold}Token URL:{/}    ${o.tokenUrl || '{#6c7086-fg}(not set){/}'}\n`;
-        content += ` {bold}Client ID:{/}    ${o.clientId || '{#6c7086-fg}(not set){/}'}\n`;
+        content += ` {bold}Token URL:{/}    ${Interpolator.highlightVariables(o.tokenUrl || '', this.collection, t.accent, t.delete) || '{#6c7086-fg}(not set){/}'}\n`;
+        content += ` {bold}Client ID:{/}    ${Interpolator.highlightVariables(o.clientId || '', this.collection, t.accent, t.delete) || '{#6c7086-fg}(not set){/}'}\n`;
         if (o.grantType === 'password') {
-          content += ` {bold}Username:{/}     ${o.username || '{#6c7086-fg}(not set){/}'}\n`;
+          content += ` {bold}Username:{/}     ${Interpolator.highlightVariables(o.username || '', this.collection, t.accent, t.delete) || '{#6c7086-fg}(not set){/}'}\n`;
           content += ` {bold}Password:{/}     ${o.password ? '********' : '{#6c7086-fg}(not set){/}'}\n`;
         } else if (o.grantType === 'authorization_code') {
-          content += ` {bold}Auth URL:{/}     ${o.authUrl || '{#6c7086-fg}(not set){/}'}\n`;
+          content += ` {bold}Auth URL:{/}     ${Interpolator.highlightVariables(o.authUrl || '', this.collection, t.accent, t.delete) || '{#6c7086-fg}(not set){/}'}\n`;
           content += ` {bold}Callback URL:{/} ${o.redirectUri || 'http://127.0.0.1:3000/callback'}\n`;
           content += ` {bold}PKCE:{/}         ${o.pkce !== false ? '{#a6e3a1-fg}Enabled{/}' : '{#f38ba8-fg}Disabled{/}'}\n`;
         }
@@ -572,13 +655,23 @@ export class BruiApp {
       content += ` {bold}{${t.get}-fg}[ GET ACCESS TOKEN (Press 'O' or Click) ]{/}  \n` +
                  ` {bold}{${t.put}-fg}[ Configure Auth (Press 'A') ]{/}  ` +
                  `{bold}{${t.options}-fg}[ Cycle Mode (Press 'M') ]{/}  ` +
-                 `{bold}[ Save (Press 'S') ]{/}`;
+                 `{bold}{${t.get}-fg}[ Save (Press 'S') ]{/}  ` +
+                 `{bold}{${t.delete}-fg}[ Revert (Press 'R') ]{/}`;
     } else if (this.activeRequestTab === 'pre-script') {
-      content = req.preRequestScript || '{#6c7086-fg}No pre-request script.{/}';
+      content = ` {bold}{${t.put}-fg}[ Edit Pre-Script (Press 'I' or Click) ]{/}   ` +
+                `{bold}{${t.get}-fg}[ Save .bru (Press 'S') ]{/}   ` +
+                `{bold}{${t.delete}-fg}[ Revert (Press 'R') ]{/}\n\n` +
+                (req.preRequestScript || `{${t.subtext}-fg}No pre-request script.{/}`);
     } else if (this.activeRequestTab === 'post-script') {
-      content = req.postResponseScript || '{#6c7086-fg}No post-response script.{/}';
+      content = ` {bold}{${t.put}-fg}[ Edit Post-Script (Press 'I' or Click) ]{/}   ` +
+                `{bold}{${t.get}-fg}[ Save .bru (Press 'S') ]{/}   ` +
+                `{bold}{${t.delete}-fg}[ Revert (Press 'R') ]{/}\n\n` +
+                (req.postResponseScript || `{${t.subtext}-fg}No post-response script.{/}`);
     } else if (this.activeRequestTab === 'docs') {
-      content = req.docs || '{#6c7086-fg}No documentation available.{/}';
+      content = ` {bold}{${t.put}-fg}[ Edit Docs (Press 'I' or Click) ]{/}   ` +
+                `{bold}{${t.get}-fg}[ Save .bru (Press 'S') ]{/}   ` +
+                `{bold}{${t.delete}-fg}[ Revert (Press 'R') ]{/}\n\n` +
+                Interpolator.highlightVariables(req.docs || `{${t.subtext}-fg}No documentation available.{/}`, this.collection, t.accent, t.delete);
     }
 
     this.requestContentBox.setContent(content);
@@ -679,10 +772,9 @@ export class BruiApp {
 
   private updateStatusBar(msg: string) {
     const t = this.getTheme();
-    const isAuthTab = this.activeRequestTab === 'auth';
-    const shortcuts = isAuthTab
-      ? `{bold}[Space]{/} Send  {bold}[O]{/} Get Token  {bold}[A]{/} Auth Config  {bold}[M]{/} Mode  {bold}[S]{/} Save  {bold}[E]{/} Env  {bold}[q]{/} Quit`
-      : `{bold}[Space]{/} Send  {bold}[C]{/} Open Coll  {bold}[O]{/} OAuth2  {bold}[E]{/} Env  {bold}[T]{/} Theme  {bold}[1-7]{/} Tabs  {bold}[q]{/} Quit`;
+    const shortcuts =
+      `{bold}[Space]{/} Send  {bold}[U]{/} URL  {bold}[I]{/} Edit Tab  ` +
+      `{bold}[S]{/} Save  {bold}[R]{/} Revert  {bold}[E]{/} Env  {bold}[C]{/} Coll  {bold}[1-7]{/} Tabs  {bold}[q]{/} Quit`;
 
     this.statusBar.setContent(
       ` ${shortcuts}   ` +
@@ -691,13 +783,23 @@ export class BruiApp {
     this.screen.render();
   }
 
+  private markRequestModified(req: BrunoRequest) {
+    this.modifiedRequests.add(req.id);
+    this.renderSidebar();
+    this.updateRequestView();
+  }
+
   private bindEvents() {
-    // 1. Sidebar selection change & Enter handling
-    this.sidebarList.on('select', (_item: any, index: number) => {
-      this.handleTreeSelection(index);
+    // 1. Sidebar keyboard Enter -> toggle folder or select request
+    this.sidebarList.key(['enter'], () => {
+      if (this.isModalOpen()) return;
+      const idx = (this.sidebarList as any).selected;
+      this.handleTreeSelection(idx);
     });
 
+    // Sidebar Up/Down navigation -> preview request immediately
     this.sidebarList.on('select item', (_item: any, index: number) => {
+      if (this.isUpdatingSidebar) return;
       this.selectedTreeIndex = index;
       const target = this.visibleTreeItems[index];
       if (target && target.type === 'request') {
@@ -706,10 +808,15 @@ export class BruiApp {
       }
     });
 
-    // 2. Mouse click on sidebar
-    this.sidebarList.on('click', () => {
-      const idx = (this.sidebarList as any).selected;
-      this.handleTreeSelection(idx);
+    // 2. Mouse click on any item in sidebar -> single-click opens API or toggles folder
+    this.sidebarList.on('element click', (el: any) => {
+      if (this.isModalOpen()) return;
+      const items = (this.sidebarList as any).items as any[];
+      const idx = items ? items.indexOf(el) : -1;
+      if (idx >= 0) {
+        this.selectedTreeIndex = idx;
+        this.handleTreeSelection(idx);
+      }
     });
 
     // 3. Mouse click on Header -> Open Collection, Env, Auth, or Theme based on click position
@@ -735,8 +842,7 @@ export class BruiApp {
       }
 
       if (relY === 1) {
-        // Line 2: " <dog9>  Collection [C]: [<name>]   Env [E]: [<env>]   Auth [A]: [<status>]"
-        const collPrefix = 12 + 16 + this.collection.name.length + 2; // up to end of [name]
+        const collPrefix = 12 + 16 + this.collection.name.length + 2;
         const envName = this.collection.activeEnvironment || 'None';
         const envStart = collPrefix + 3;
         const envEnd = envStart + 9 + envName.length + 2;
@@ -752,6 +858,43 @@ export class BruiApp {
       }
 
       this.openCollectionModal();
+    });
+
+    // 3b. Mouse click on Request Header Box -> Method, URL, [Edit URL], [Edit], [Save], [Revert]
+    this.requestHeaderBox.on('click', (data: any) => {
+      if (this.isModalOpen() || !this.selectedRequest) return;
+      const pos = (this.requestHeaderBox as any).lpos;
+      if (!pos || !data || typeof data.x !== 'number') return;
+
+      const relX = data.x - pos.xi;
+      const relY = data.y - pos.yi;
+      const width = pos.xl - pos.xi;
+
+      if (relY === 0) {
+        const methodBtnLen = this.selectedRequest.method.length + 5;
+        if (relX <= methodBtnLen) {
+          this.cycleActiveRequestMethod();
+          return;
+        }
+        // Right-aligned buttons: "[Edit URL (U)] [Edit (I)] [Save (S)] [Revert (R)]" (49 chars)
+        const rightStart = width - 49;
+        if (relX >= rightStart) {
+          const offset = relX - rightStart;
+          if (offset < 15) {
+            this.editActiveRequestUrl();
+          } else if (offset < 26) {
+            this.editActiveTab();
+          } else if (offset < 37) {
+            this.saveActiveRequest();
+          } else {
+            this.revertActiveRequest();
+          }
+          return;
+        }
+        this.editActiveRequestUrl();
+      } else if (relY === 1) {
+        this.editActiveRequestUrl();
+      }
     });
 
     // 4. Mouse click on Request Tabs -> Select exact clicked tab
@@ -829,6 +972,18 @@ export class BruiApp {
       this.openEnvironmentModal();
     });
 
+    // Edit URL [U]
+    this.screen.key(['u', 'U'], () => {
+      if (this.isModalOpen()) return;
+      this.editActiveRequestUrl();
+    });
+
+    // Edit active tab content [I]
+    this.screen.key(['i', 'I'], () => {
+      if (this.isModalOpen()) return;
+      this.editActiveTab();
+    });
+
     // Number keys for request tabs
     this.screen.key(['1'], () => { if (!this.isModalOpen()) { this.activeRequestTab = 'headers'; this.updateRequestView(); } });
     this.screen.key(['2'], () => { if (!this.isModalOpen()) { this.activeRequestTab = 'params'; this.updateRequestView(); } });
@@ -851,51 +1006,140 @@ export class BruiApp {
       this.screen.render();
     });
 
-    // Mouse click on Request Content Box (Handles Auth Mode buttons & Actions when in Auth Tab)
+    // Mouse click on Request Content Box (Handles interactive actions across all tabs)
     this.requestContentBox.on('click', async (data: any) => {
-      if (this.isModalOpen()) return;
-      if (this.activeRequestTab !== 'auth' || !this.selectedRequest) return;
+      if (this.isModalOpen() || !this.selectedRequest) return;
+      const req = this.selectedRequest;
 
       const pos = (this.requestContentBox as any).lpos;
-      if (pos && data && typeof data.x === 'number' && typeof data.y === 'number') {
-        const relX = data.x - pos.xi;
-        const relY = data.y - pos.yi + ((this.requestContentBox as any).childBase || 0);
+      if (!pos || !data || typeof data.x !== 'number' || typeof data.y !== 'number') return;
 
-        // Line 0: " Auth Mode:  [ INHERIT ]  [ NONE ]  [ BEARER ]  [ BASIC ]  [ OAUTH2 ]"
+      const relX = data.x - pos.xi;
+      const relY = data.y - pos.yi + ((this.requestContentBox as any).childBase || 0);
+      const lines = (this.requestContentBox.getContent() || '').split('\n');
+      const clickedLine = lines[relY] || '';
+
+      // Common Save / Revert buttons on action lines
+      if (clickedLine.includes('Save .bru') || clickedLine.includes('Save (Press')) {
+        if (clickedLine.includes('Revert') && relX > 62) {
+          this.revertActiveRequest();
+          return;
+        }
+        if (clickedLine.includes('Add Header') || clickedLine.includes('Add Param') || clickedLine.includes('Edit ')) {
+          if (relX < 38) {
+            this.editActiveTab();
+          } else if (relX < 64) {
+            this.saveActiveRequest();
+          } else {
+            this.revertActiveRequest();
+          }
+          return;
+        }
+      }
+
+      if (this.activeRequestTab === 'headers') {
+        if (relY >= 0 && relY < req.headers.length) {
+          const h = req.headers[relY];
+          const cleanLine = clickedLine.replace(/\{[^}]*\}/g, '');
+          if (relX >= cleanLine.length - 6) {
+            req.headers.splice(relY, 1);
+            this.markRequestModified(req);
+            this.updateStatusBar(`Removed header: ${h.name}`);
+          } else {
+            this.openSingleLinePrompt(`Edit Header #${relY + 1} (Name: Value)`, `${h.name}: ${h.value}`, (val) => {
+              const sep = val.indexOf(':');
+              if (sep > 0) {
+                h.name = val.slice(0, sep).trim();
+                h.value = val.slice(sep + 1).trim();
+                this.markRequestModified(req);
+                this.updateStatusBar(`Updated header: ${h.name}`);
+              }
+            });
+          }
+        }
+        return;
+      }
+
+      if (this.activeRequestTab === 'params') {
+        if (relY >= 0 && relY < req.params.length) {
+          const p = req.params[relY];
+          const cleanLine = clickedLine.replace(/\{[^}]*\}/g, '');
+          if (relX >= cleanLine.length - 6) {
+            req.params.splice(relY, 1);
+            this.markRequestModified(req);
+            this.updateStatusBar(`Removed param: ${p.name}`);
+          } else {
+            this.openSingleLinePrompt(`Edit Param #${relY + 1} (key=value)`, `${p.name}=${p.value}`, (val) => {
+              const sep = val.indexOf('=');
+              if (sep > 0) {
+                p.name = val.slice(0, sep).trim();
+                p.value = val.slice(sep + 1).trim();
+                this.markRequestModified(req);
+                this.updateStatusBar(`Updated param: ${p.name}`);
+              }
+            });
+          }
+        }
+        return;
+      }
+
+      if (this.activeRequestTab === 'body') {
+        if (relY === 0) {
+          const hitBt = this.bodyTypeRanges.find(r => relX >= r.start && relX <= r.end);
+          if (hitBt) {
+            req.bodyType = hitBt.id;
+            this.markRequestModified(req);
+            this.updateStatusBar(`Body type set to: ${hitBt.id}`);
+          }
+          return;
+        }
+        this.editActiveTab();
+        return;
+      }
+
+      if (this.activeRequestTab === 'pre-script' || this.activeRequestTab === 'post-script' || this.activeRequestTab === 'docs') {
+        this.editActiveTab();
+        return;
+      }
+
+      if (this.activeRequestTab === 'auth') {
         if (relY === 0) {
           const hitMode = this.authModeRanges.find(r => relX >= r.start && relX <= r.end);
           if (hitMode) {
-            this.selectedRequest.authType = hitMode.id;
+            req.authType = hitMode.id;
+            this.markRequestModified(req);
             this.updateHeader();
-            this.updateRequestView();
             this.updateStatusBar(`Auth mode switched to: [${hitMode.id.toUpperCase()}]`);
             return;
           }
         }
 
-        // Check clicked line text for action buttons
-        const lines = (this.requestContentBox.getContent() || '').split('\n');
-        const clickedLine = lines[relY] || '';
         if (clickedLine.includes('GET ACCESS TOKEN')) {
           await this.triggerOAuth2();
           return;
         }
-        if (clickedLine.includes('Cycle Mode') && relX >= 32 && relX <= 58) {
-          const modes: Array<BrunoRequest['authType']> = ['inherit', 'none', 'bearer', 'basic', 'oauth2'];
-          const curIdx = modes.indexOf(this.selectedRequest.authType);
-          this.selectedRequest.authType = modes[(curIdx + 1) % modes.length];
-          this.updateHeader();
-          this.updateRequestView();
-          this.updateStatusBar(`Auth mode switched to: [${this.selectedRequest.authType.toUpperCase()}]`);
-          return;
+        if (clickedLine.includes('Cycle Mode')) {
+          if (relX >= 32 && relX <= 58) {
+            const modes: Array<BrunoRequest['authType']> = ['inherit', 'none', 'bearer', 'basic', 'oauth2'];
+            const curIdx = modes.indexOf(req.authType);
+            req.authType = modes[(curIdx + 1) % modes.length];
+            this.markRequestModified(req);
+            this.updateHeader();
+            this.updateStatusBar(`Auth mode switched to: [${req.authType.toUpperCase()}]`);
+            return;
+          }
+          if (relX > 58 && relX <= 78) {
+            this.saveActiveRequest();
+            return;
+          }
+          if (relX > 78) {
+            this.revertActiveRequest();
+            return;
+          }
         }
-        if (clickedLine.includes('Save (Press') && relX > 58) {
-          this.saveActiveRequestAuth();
-          return;
-        }
-      }
 
-      this.openAuthManagerModal();
+        this.openAuthManagerModal();
+      }
     });
 
     // Hotkey [A]: Auth Manager Dialog
@@ -904,26 +1148,324 @@ export class BruiApp {
       this.openAuthManagerModal();
     });
 
-    // Hotkey [M]: Cycle Auth Mode (when on Auth Tab)
+    // Hotkey [M]: Cycle Auth Mode (if on Auth Tab) or HTTP Method
     this.screen.key(['m', 'M'], () => {
-      if (this.isModalOpen()) return;
-      if (this.activeRequestTab === 'auth' && this.selectedRequest) {
+      if (this.isModalOpen() || !this.selectedRequest) return;
+      if (this.activeRequestTab === 'auth') {
         const modes: Array<BrunoRequest['authType']> = ['inherit', 'none', 'bearer', 'basic', 'oauth2'];
         const curIdx = modes.indexOf(this.selectedRequest.authType);
         this.selectedRequest.authType = modes[(curIdx + 1) % modes.length];
+        this.markRequestModified(this.selectedRequest);
         this.updateHeader();
-        this.updateRequestView();
         this.updateStatusBar(`Auth mode switched to: [${this.selectedRequest.authType.toUpperCase()}]`);
+      } else {
+        this.cycleActiveRequestMethod();
       }
     });
 
-    // Hotkey [S]: Save Auth to .bru file (when on Auth Tab)
+    // Hotkey [S]: Save entire request to .bru file
     this.screen.key(['s', 'S'], () => {
       if (this.isModalOpen()) return;
-      if (this.activeRequestTab === 'auth' && this.selectedRequest) {
-        this.saveActiveRequestAuth();
+      this.saveActiveRequest();
+    });
+
+    // Hotkey [R]: Revert request from .bru file on disk
+    this.screen.key(['r', 'R'], () => {
+      if (this.isModalOpen()) return;
+      this.revertActiveRequest();
+    });
+  }
+
+  private cycleActiveRequestMethod() {
+    const req = this.selectedRequest;
+    if (!req) return;
+    const methods: Array<BrunoRequest['method']> = ['GET', 'POST', 'PUT', 'PATCH', 'DELETE'];
+    const idx = methods.indexOf(req.method);
+    req.method = methods[(idx + 1) % methods.length];
+    this.markRequestModified(req);
+    this.updateStatusBar(`HTTP method changed to: ${req.method}`);
+  }
+
+  private editActiveRequestUrl() {
+    const req = this.selectedRequest;
+    if (!req) return;
+    this.openSingleLinePrompt(`Edit URL for [${req.method} ${req.name}]`, req.url, (newUrl) => {
+      if (newUrl.trim() && newUrl !== req.url) {
+        req.url = newUrl.trim();
+        this.markRequestModified(req);
+        this.updateStatusBar(`Updated URL (Press [S] to save or [R] to revert)`);
       }
     });
+  }
+
+  private editActiveTab() {
+    const req = this.selectedRequest;
+    if (!req) return;
+
+    if (this.activeRequestTab === 'headers') {
+      this.openSingleLinePrompt('Add Header (Format: Header-Name: value)', '', (val) => {
+        const sep = val.indexOf(':');
+        if (sep > 0) {
+          const name = val.slice(0, sep).trim();
+          const value = val.slice(sep + 1).trim();
+          req.headers.push({ name, value, enabled: true });
+          this.markRequestModified(req);
+          this.updateStatusBar(`Added header: ${name}`);
+        } else {
+          this.updateStatusBar('Invalid header format. Use Name: Value');
+        }
+      });
+    } else if (this.activeRequestTab === 'params') {
+      this.openSingleLinePrompt('Add Query Param (Format: key=value)', '', (val) => {
+        const sep = val.indexOf('=');
+        if (sep > 0) {
+          const name = val.slice(0, sep).trim();
+          const value = val.slice(sep + 1).trim();
+          req.params.push({ name, value, enabled: true });
+          this.markRequestModified(req);
+          this.updateStatusBar(`Added query param: ${name}`);
+        } else {
+          this.updateStatusBar('Invalid param format. Use key=value');
+        }
+      });
+    } else if (this.activeRequestTab === 'body') {
+      if (req.bodyType === 'none') {
+        req.bodyType = 'json';
+      }
+      this.openMultiLineEditor(`Edit Request Body (${req.bodyType.toUpperCase()})`, req.bodyContent || '', (newBody) => {
+        req.bodyContent = newBody;
+        this.markRequestModified(req);
+        this.updateStatusBar(`Body updated (Press [S] to save or [R] to revert)`);
+      });
+    } else if (this.activeRequestTab === 'auth') {
+      this.openAuthManagerModal();
+    } else if (this.activeRequestTab === 'pre-script') {
+      this.openMultiLineEditor('Edit Pre-Request Script (JS)', req.preRequestScript || '', (newScript) => {
+        req.preRequestScript = newScript;
+        this.markRequestModified(req);
+        this.updateStatusBar(`Pre-request script updated`);
+      });
+    } else if (this.activeRequestTab === 'post-script') {
+      this.openMultiLineEditor('Edit Post-Response Script (JS)', req.postResponseScript || '', (newScript) => {
+        req.postResponseScript = newScript;
+        this.markRequestModified(req);
+        this.updateStatusBar(`Post-response script updated`);
+      });
+    } else if (this.activeRequestTab === 'docs') {
+      this.openMultiLineEditor('Edit Request Documentation (Markdown)', req.docs || '', (newDocs) => {
+        req.docs = newDocs;
+        this.markRequestModified(req);
+        this.updateStatusBar(`Documentation updated`);
+      });
+    }
+  }
+
+  private openSingleLinePrompt(title: string, initialValue: string, onSubmit: (val: string) => void) {
+    if (this.isModalOpen()) return;
+    const t = this.getTheme();
+
+    this.editorModal = blessed.box({
+      parent: this.screen,
+      top: 'center',
+      left: 'center',
+      width: '70%',
+      height: 7,
+      border: { type: 'line' },
+      style: {
+        bg: t.surface,
+        fg: t.fg,
+        border: { fg: t.accent }
+      },
+      tags: true,
+      mouse: true
+    });
+
+    blessed.box({
+      parent: this.editorModal,
+      top: 0,
+      left: 1,
+      right: 1,
+      height: 1,
+      content: `{bold}{${t.accent}-fg}${title}{/}`,
+      style: { bg: t.surface, fg: t.fg },
+      tags: true
+    });
+
+    const input = blessed.textbox({
+      parent: this.editorModal,
+      top: 2,
+      left: 1,
+      right: 1,
+      height: 1,
+      inputOnFocus: true,
+      keys: true,
+      mouse: true,
+      style: {
+        bg: t.bg,
+        fg: t.fg,
+        focus: { bg: t.bg, fg: t.fg }
+      }
+    });
+
+    blessed.box({
+      parent: this.editorModal,
+      top: 4,
+      left: 1,
+      right: 1,
+      height: 1,
+      content: `{${t.subtext}-fg}[Enter] Apply   [Esc] Cancel   (Supports {{VAR}} placeholders){/}`,
+      style: { bg: t.surface, fg: t.subtext },
+      tags: true
+    });
+
+    const closePrompt = () => {
+      if (this.editorModal) {
+        this.editorModal.destroy();
+        this.editorModal = undefined;
+        this.sidebarList.focus();
+        this.screen.render();
+      }
+    };
+
+    input.setValue(initialValue);
+
+    input.on('submit', (val: string) => {
+      closePrompt();
+      onSubmit(val);
+    });
+
+    input.on('cancel', () => {
+      closePrompt();
+    });
+
+    input.key(['escape'], () => {
+      closePrompt();
+    });
+
+    input.focus();
+    this.screen.render();
+  }
+
+  private openMultiLineEditor(title: string, initialValue: string, onSubmit: (val: string) => void) {
+    if (this.isModalOpen()) return;
+    const t = this.getTheme();
+
+    this.editorModal = blessed.box({
+      parent: this.screen,
+      top: 'center',
+      left: 'center',
+      width: '80%',
+      height: '75%',
+      border: { type: 'line' },
+      style: {
+        bg: t.surface,
+        fg: t.fg,
+        border: { fg: t.accent }
+      },
+      tags: true,
+      mouse: true
+    });
+
+    blessed.box({
+      parent: this.editorModal,
+      top: 0,
+      left: 1,
+      right: 28,
+      height: 1,
+      content: `{bold}{${t.accent}-fg}${title}{/}`,
+      style: { bg: t.surface, fg: t.fg },
+      tags: true
+    });
+
+    const applyBtn = blessed.box({
+      parent: this.editorModal,
+      top: 0,
+      right: 13,
+      width: 13,
+      height: 1,
+      content: `{bold}{${t.get}-fg}[Apply C-s]{/}`,
+      style: { bg: t.surface, fg: t.get },
+      tags: true,
+      mouse: true
+    });
+
+    const cancelBtn = blessed.box({
+      parent: this.editorModal,
+      top: 0,
+      right: 1,
+      width: 11,
+      height: 1,
+      content: `{bold}{${t.delete}-fg}[X Cancel]{/}`,
+      style: { bg: t.surface, fg: t.delete },
+      tags: true,
+      mouse: true
+    });
+
+    const textarea = blessed.textarea({
+      parent: this.editorModal,
+      top: 2,
+      left: 1,
+      right: 1,
+      bottom: 2,
+      inputOnFocus: true,
+      keys: true,
+      mouse: true,
+      scrollable: true,
+      alwaysScroll: true,
+      border: { type: 'line' },
+      style: {
+        bg: t.bg,
+        fg: t.fg,
+        border: { fg: t.borderFocus }
+      }
+    });
+
+    blessed.box({
+      parent: this.editorModal,
+      bottom: 0,
+      left: 1,
+      right: 1,
+      height: 1,
+      content: `{${t.subtext}-fg}[Ctrl+S] or Click [Apply C-s] to confirm changes   [Esc] or Click [X Cancel] to discard{/}`,
+      style: { bg: t.surface, fg: t.subtext },
+      tags: true
+    });
+
+    const closeEditor = () => {
+      if (this.editorModal) {
+        this.editorModal.destroy();
+        this.editorModal = undefined;
+        this.sidebarList.focus();
+        this.screen.render();
+      }
+    };
+
+    const finishSave = () => {
+      const val = textarea.getValue();
+      closeEditor();
+      onSubmit(val);
+    };
+
+    textarea.setValue(initialValue);
+
+    applyBtn.on('click', () => {
+      finishSave();
+    });
+
+    cancelBtn.on('click', () => {
+      closeEditor();
+    });
+
+    textarea.key(['C-s'], () => {
+      finishSave();
+    });
+
+    textarea.key(['escape'], () => {
+      closeEditor();
+    });
+
+    textarea.focus();
+    this.screen.render();
   }
 
   private handleTreeSelection(index: number) {
@@ -931,24 +1473,26 @@ export class BruiApp {
     if (!item) return;
 
     if (item.type === 'folder') {
-      // Toggle folder expansion
       if (this.expandedFolders.has(item.folder.id)) {
         this.expandedFolders.delete(item.folder.id);
       } else {
         this.expandedFolders.add(item.folder.id);
       }
+      this.selectedTreeIndex = index;
       this.rebuildTree();
       this.renderSidebar();
-      (this.sidebarList as any).select(index);
     } else {
-      // Selected request
+      this.selectedTreeIndex = index;
       this.selectedRequest = item.request;
+      (this.sidebarList as any).select(index);
       this.updateRequestView();
+      this.screen.render();
     }
   }
 
   public isModalOpen(): boolean {
     return !!this.collectionModal ||
+           !!this.editorModal ||
            (!!this.envManagerModal && this.envManagerModal.isOpen()) ||
            (!!this.authManagerModal && this.authManagerModal.isOpen());
   }
@@ -1129,6 +1673,10 @@ export class BruiApp {
       req,
       this.themeManager,
       () => {
+        if (req) {
+          this.modifiedRequests.add(req.id);
+          this.renderSidebar();
+        }
         this.updateHeader();
         this.updateRequestView();
         this.updateResponseView();
@@ -1141,7 +1689,7 @@ export class BruiApp {
     this.authManagerModal.show();
   }
 
-  private saveActiveRequestAuth() {
+  private saveActiveRequest() {
     const req = this.selectedRequest;
     if (!req) return;
     try {
@@ -1153,8 +1701,51 @@ export class BruiApp {
       const raw = fs.readFileSync(filePath, 'utf8');
       const json = bruToJsonV2(raw) as any;
 
+      if (!json.meta) {
+        json.meta = { name: req.name, type: 'http', seq: req.seq || 1 };
+      }
+
       if (!json.http) json.http = {};
+      json.http.method = req.method.toLowerCase();
+      json.http.url = req.url;
+      json.http.body = req.bodyType;
       json.http.auth = req.authType;
+
+      json.headers = req.headers.map(h => ({
+        name: h.name,
+        value: h.value,
+        enabled: h.enabled !== false
+      }));
+
+      json.params = req.params.map(p => ({
+        name: p.name,
+        value: p.value,
+        enabled: p.enabled !== false,
+        type: 'query'
+      }));
+
+      if (!json.body) json.body = {};
+      if (req.bodyType === 'json') {
+        json.body.json = req.bodyContent;
+      } else if (req.bodyType === 'text') {
+        json.body.text = req.bodyContent;
+      } else if (req.bodyType === 'xml') {
+        json.body.xml = req.bodyContent;
+      } else if (req.bodyType === 'formUrlEncoded') {
+        json.body.formUrlEncoded = req.bodyContent
+          .split(/\r?\n/)
+          .map(line => line.trim())
+          .filter(line => line.length > 0)
+          .map(line => {
+            const idx = line.indexOf('=');
+            if (idx === -1) return { name: line, value: '', enabled: true };
+            return {
+              name: line.substring(0, idx).trim(),
+              value: line.substring(idx + 1).trim(),
+              enabled: true
+            };
+          });
+      }
 
       if (!json.auth) json.auth = {};
       json.auth.mode = req.authType;
@@ -1184,11 +1775,60 @@ export class BruiApp {
         };
       }
 
+      if (req.preRequestScript || req.postResponseScript || json.script) {
+        if (!json.script) json.script = {};
+        if (req.preRequestScript !== undefined) {
+          json.script.req = req.preRequestScript;
+        }
+        if (req.postResponseScript !== undefined) {
+          json.script.res = req.postResponseScript;
+        }
+      }
+
+      if (req.docs !== undefined) {
+        json.docs = req.docs;
+      }
+
       const updated = jsonToBruV2(json);
       fs.writeFileSync(filePath, updated, 'utf8');
-      this.updateStatusBar(`Saved auth configuration to ${path.basename(filePath)}!`);
+      this.modifiedRequests.delete(req.id);
+      this.renderSidebar();
+      this.updateRequestView();
+      this.updateStatusBar(`Saved changes to ${path.basename(filePath)}`);
     } catch (err: any) {
       this.updateStatusBar(`Save error: ${err.message}`);
+    }
+  }
+
+  private revertActiveRequest() {
+    const req = this.selectedRequest;
+    if (!req) return;
+    try {
+      const fresh = this.parser.parseRequestFile(req.filePath, req.relativePath);
+      if (!fresh) {
+        throw new Error(`Failed to reload ${path.basename(req.filePath)}`);
+      }
+      req.method = fresh.method;
+      req.url = fresh.url;
+      req.headers = fresh.headers;
+      req.params = fresh.params;
+      req.bodyType = fresh.bodyType;
+      req.bodyContent = fresh.bodyContent;
+      req.authType = fresh.authType;
+      req.authBearerToken = fresh.authBearerToken;
+      req.authBasicUser = fresh.authBasicUser;
+      req.authBasicPassword = fresh.authBasicPassword;
+      req.authOAuth2 = fresh.authOAuth2;
+      req.preRequestScript = fresh.preRequestScript;
+      req.postResponseScript = fresh.postResponseScript;
+      req.docs = fresh.docs;
+
+      this.modifiedRequests.delete(req.id);
+      this.renderSidebar();
+      this.updateRequestView();
+      this.updateStatusBar(`Reverted ${req.name} from ${path.basename(req.filePath)}`);
+    } catch (err: any) {
+      this.updateStatusBar(`Revert error: ${err.message}`);
     }
   }
 

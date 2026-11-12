@@ -78,7 +78,21 @@ export class HttpClient {
           headersMap['content-type'] = 'application/json';
         }
       } else if (request.bodyType === 'formUrlEncoded' && request.bodyContent) {
-        body = Interpolator.interpolate(request.bodyContent, collection);
+        const params = new URLSearchParams();
+        const pairs = request.bodyContent.includes('\n')
+          ? request.bodyContent.split('\n')
+          : request.bodyContent.split('&');
+        for (const pair of pairs) {
+          const trimmed = pair.trim();
+          if (!trimmed) continue;
+          const eqIdx = trimmed.indexOf('=');
+          if (eqIdx >= 0) {
+            const k = Interpolator.interpolate(trimmed.slice(0, eqIdx).trim(), collection);
+            const v = Interpolator.interpolate(trimmed.slice(eqIdx + 1).trim(), collection);
+            params.append(k, v);
+          }
+        }
+        body = params.toString();
         if (!headersMap['content-type']) {
           headersMap['content-type'] = 'application/x-www-form-urlencoded';
         }

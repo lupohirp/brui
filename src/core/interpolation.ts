@@ -49,6 +49,57 @@ export class Interpolator {
     });
   }
 
+  /**
+   * Highlights {{VAR_1}} template placeholders using the theme's variable color (e.g. Catppuccin Violet/Mauve),
+   * or missingColor if the variable is not defined in the active environment / runtime.
+   */
+  public static highlightVariables(
+    text: string,
+    collection: BrunoCollection,
+    varColor: string,
+    missingColor?: string
+  ): string {
+    if (!text || typeof text !== 'string') return text;
+
+    return text.replace(/\{\{([a-zA-Z0-9_$.,-]+)\}\}/g, (_match, varName) => {
+      const isDynamic = varName === '$uuid' || varName === '$guid' || varName === '$timestamp' || varName === '$randomInt';
+      const resolved = isDynamic ? '<dynamic>' : Interpolator.getVariable(varName, collection);
+      const color = resolved !== undefined ? varColor : (missingColor || varColor);
+      return `{bold}{${color}-fg}{{${varName}}}{/}`;
+    });
+  }
+
+  /**
+   * Interpolates {{VAR_1}} and colors the resolved value in varColor (or keeps {{VAR_1}} in missingColor if undefined).
+   */
+  public static interpolateWithColor(
+    text: string,
+    collection: BrunoCollection,
+    varColor: string,
+    missingColor?: string
+  ): string {
+    if (!text || typeof text !== 'string') return text;
+
+    return text.replace(/\{\{([a-zA-Z0-9_$.,-]+)\}\}/g, (match, varName) => {
+      if (varName === '$uuid' || varName === '$guid') {
+        return `{bold}{${varColor}-fg}${crypto.randomUUID()}{/}`;
+      }
+      if (varName === '$timestamp') {
+        return `{bold}{${varColor}-fg}${Math.floor(Date.now() / 1000)}{/}`;
+      }
+      if (varName === '$randomInt') {
+        return `{bold}{${varColor}-fg}${Math.floor(Math.random() * 1000)}{/}`;
+      }
+
+      const resolved = Interpolator.getVariable(varName, collection);
+      if (resolved !== undefined) {
+        return `{bold}{${varColor}-fg}${resolved}{/}`;
+      }
+
+      return `{bold}{${missingColor || varColor}-fg}${match}{/}`;
+    });
+  }
+
   public static getVariable(
     varName: string,
     collection: BrunoCollection,

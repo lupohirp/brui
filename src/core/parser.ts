@@ -306,7 +306,7 @@ export class CollectionParser {
     return { folders, requests };
   }
 
-  private parseRequestFile(filePath: string, relativePath: string): BrunoRequest | null {
+  public parseRequestFile(filePath: string, relativePath: string): BrunoRequest | null {
     try {
       const content = fs.readFileSync(filePath, 'utf8');
       const parsed = bruToJsonV2(content) as any;
@@ -359,8 +359,8 @@ export class CollectionParser {
           if (Array.isArray(parsed.body.formUrlEncoded)) {
             const kv = parsed.body.formUrlEncoded
               .filter((x: any) => x.enabled !== false && x.name)
-              .map((x: any) => `${encodeURIComponent(x.name)}=${encodeURIComponent(x.value || '')}`)
-              .join('&');
+              .map((x: any) => `${x.name}=${x.value || ''}`)
+              .join('\n');
             bodyContent = kv;
           } else if (typeof parsed.body.formUrlEncoded === 'string') {
             bodyContent = parsed.body.formUrlEncoded;

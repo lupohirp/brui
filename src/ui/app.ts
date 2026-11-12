@@ -39,6 +39,9 @@ export class BruiApp {
 
   private modifiedRequests: Set<string> = new Set();
   private isUpdatingSidebar: boolean = false;
+  private inlineTarget: 'none' | 'url' | 'content' = 'none';
+  private inlineText: string = '';
+  private inlineCursor: number = 0;
 
   // UI Widgets
   private screen!: blessed.Widgets.Screen;
@@ -468,14 +471,30 @@ export class BruiApp {
       : '';
 
     // Highlight {{VAR_1}} in theme's accent color (Catppuccin Mauve/Violet #cba6f7)
-    const highlightedUrl = Interpolator.highlightVariables(req.url, this.collection, t.accent, t.delete);
+    const escapeTags = (s: string) => s.replace(/\{/g, '{open}').replace(/\}/g, '{close}');
+
+    const renderSingleLineWithCursor = (raw: string, isEditing: boolean, cur: number): string => {
+      if (!isEditing) {
+        return Interpolator.highlightVariables(raw, this.collection, t.accent, t.delete);
+      }
+      const c = Math.max(0, Math.min(raw.length, cur));
+      const before = escapeTags(raw.slice(0, c));
+      const atChar = c < raw.length ? escapeTags(raw[c]) : ' ';
+      const after = c < raw.length ? escapeTags(raw.slice(c + 1)) : '';
+      return `${before}{inverse}${atChar}{/inverse}${after}`;
+    };
+
+    const urlDisplay = renderSingleLineWithCursor(
+      this.inlineTarget === 'url' ? this.inlineText : req.url,
+      this.inlineTarget === 'url',
+      this.inlineCursor
+    );
     const resolvedUrlColored = Interpolator.interpolateWithColor(req.url, this.collection, t.accent, t.delete);
 
     const headerLine1 =
-      ` {bold}{${badgeColor}-fg}[ ${req.method} ]{/}  {bold}${highlightedUrl}{/}${modBadge}`;
+      ` {bold}{${badgeColor}-fg}[ ${req.method} ]{/}  {bold}${urlDisplay}{/}${modBadge}`;
     const headerLine2 =
-      ` {bold}{${t.put}-fg}[U: Edit URL]{/}  {bold}{${t.options}-fg}[I: Edit Tab]{/}  ` +
-      `{bold}{${t.get}-fg}[S: Save .bru]{/}  {bold}{${t.delete}-fg}[R: Revert]{/}` +
+      ` {bold}{${t.get}-fg}[Send]{/}  {bold}{${t.options}-fg}[Save .bru (Ctrl+S)]{/}  {bold}{${t.delete}-fg}[Revert]{/}` +
       (req.url.includes('{{') ? `   {${t.subtext}-fg}-> ${resolvedUrlColored}{/}` : '');
 
     this.requestHeaderBox.setContent(`${headerLine1}\n${headerLine2}`);
@@ -513,26 +532,63 @@ export class BruiApp {
 
     this.requestTabsBox.setContent(tabStr);
 
-    let content = '';
-    if (this.activeRequestTab === 'headers') {
-      content = ` {bold}{${t.put}-fg}[ Edit / Add Headers (Press 'I' or Click) ]{/}   ` +
-                `{bold}{${t.get}-fg}[ Save .bru (Press 'S') ]{/}   ` +
-                `{bold}{${t.delete}-fg}[ Revert (Press 'R') ]{/}\n`;
-
-      if (req.headers.length === 0) {
-        content += ` {${t.subtext}-fg}No request-specific headers configured.{/}\n`;
-      } else {
-        content += req.headers.map((h, i) => {
-          const rawColored = Interpolator.highlightVariables(h.value, this.collection, t.accent, t.delete);
-          const resPreview = h.value.includes('{{')
-            ? `  {${t.subtext}-fg}(-> ${Interpolator.interpolateWithColor(h.value, this.collection, t.accent, t.delete)}{${t.subtext}-fg}){/}`
-            : '';
-          return ` ${i + 1}. {bold}{${t.put}-fg}${h.name}{/}: ${rawColored}${resPreview}`;
-        }).join('\n') + '\n';
+    const renderInlineBlock = (
+      rawText: string,
+      isEditing: boolean,
+      cursorOffset: number,
+      placeholder: string,
+      showLineResolvedPreview: boolean = false
+    ): string => {
+      if (!isEditing && !rawText) {
+        return ` {${t.subtext}-fg}1 │ ${placeholder} (Click here to type directly){/}`;
+      }
+      const lines = rawText.split('\n');
+      let rem = Math.max(0, Math.min(rawText.length, cursorOffset));
+      let curRow = 0;
+      let curCol = 0;
+      for (let i = 0; i < lines.length; i++) {
+        if (rem <= lines[i].length) {
+          curRow = i;
+          curCol = rem;
+          break;
+        }
+        rem -= lines[i].length + 1;
       }
 
+      return lines.map((line, idx) => {
+        const prefix = ` {${t.subtext}-fg}${String(idx + 1).padStart(2, ' ')} │ {/}`;
+        let lineBody: string;
+        if (isEditing && idx === curRow) {
+          const before = escapeTags(line.slice(0, curCol));
+          const atChar = curCol < line.length ? escapeTags(line[curCol]) : ' ';
+          const after = curCol < line.length ? escapeTags(line.slice(curCol + 1)) : '';
+          lineBody = `${before}{inverse}${atChar}{/inverse}${after}`;
+        } else {
+          lineBody = Interpolator.highlightVariables(line, this.collection, t.accent, t.delete);
+        }
+        const resPreview = showLineResolvedPreview && line.includes('{{')
+          ? `  {${t.subtext}-fg}(-> ${Interpolator.interpolateWithColor(line, this.collection, t.accent, t.delete)}{${t.subtext}-fg}){/}`
+          : '';
+        return `${prefix}${lineBody}${resPreview}`;
+      }).join('\n');
+    };
+
+    const isEditingContent = this.inlineTarget === 'content';
+    let content = '';
+    if (this.activeRequestTab === 'headers') {
+      const rawHeaders = isEditingContent
+        ? this.inlineText
+        : req.headers.map(h => `${h.name}: ${h.value}`).join('\n');
+      content = renderInlineBlock(
+        rawHeaders,
+        isEditingContent,
+        this.inlineCursor,
+        'Header-Name: value',
+        true
+      );
+
       if (collHeaders.length > 0) {
-        content += `\n {${t.subtext}-fg}--- Inherited from collection.bru (${collHeaders.length}) ---{/}\n`;
+        content += `\n\n {${t.subtext}-fg}--- Inherited from collection.bru (${collHeaders.length}) ---{/}\n`;
         content += collHeaders.map(h => {
           const rawColored = Interpolator.highlightVariables(h.value, this.collection, t.accent, t.delete);
           const resPreview = h.value.includes('{{')
@@ -542,21 +598,16 @@ export class BruiApp {
         }).join('\n');
       }
     } else if (this.activeRequestTab === 'params') {
-      content = ` {bold}{${t.put}-fg}[ Edit / Add Params (Press 'I' or Click) ]{/}   ` +
-                `{bold}{${t.get}-fg}[ Save .bru (Press 'S') ]{/}   ` +
-                `{bold}{${t.delete}-fg}[ Revert (Press 'R') ]{/}\n`;
-
-      if (req.params.length === 0) {
-        content += ` {${t.subtext}-fg}No query parameters configured.{/}`;
-      } else {
-        content += req.params.map((p, i) => {
-          const rawColored = Interpolator.highlightVariables(p.value, this.collection, t.accent, t.delete);
-          const resPreview = p.value.includes('{{')
-            ? `  {${t.subtext}-fg}(-> ${Interpolator.interpolateWithColor(p.value, this.collection, t.accent, t.delete)}{${t.subtext}-fg}){/}`
-            : '';
-          return ` ${i + 1}. {bold}{${t.patch}-fg}${p.name}{/} = ${rawColored}${resPreview}`;
-        }).join('\n');
-      }
+      const rawParams = isEditingContent
+        ? this.inlineText
+        : req.params.map(p => `${p.name}=${p.value}`).join('\n');
+      content = renderInlineBlock(
+        rawParams,
+        isEditingContent,
+        this.inlineCursor,
+        'key=value',
+        true
+      );
     } else if (this.activeRequestTab === 'body') {
       const bTypes: Array<BrunoRequest['bodyType']> = ['none', 'json', 'text', 'formUrlEncoded', 'xml'];
       this.bodyTypeRanges = [];
@@ -576,16 +627,18 @@ export class BruiApp {
         return `{${t.subtext}-fg}[ ${label} ]{/}`;
       }).join('  ');
 
-      content = ` {bold}Body Type:{/}  ${bTypeButtons}   {bold}{${t.put}-fg}[ Edit Body (Press 'I' or Click) ]{/}\n`;
-
-      if (req.bodyType === 'none' || !req.bodyContent) {
-        content += ` {${t.subtext}-fg}No body configured. Press 'I' or click above to add a request body.{/}`;
-      } else {
-        content += Interpolator.highlightVariables(req.bodyContent, this.collection, t.accent, t.delete);
-        if (req.bodyContent.includes('{{')) {
-          content += `\n\n{${t.subtext}-fg}--- Resolved Body Preview ---{/}\n`;
-          content += Interpolator.interpolateWithColor(req.bodyContent, this.collection, t.accent, t.delete);
-        }
+      content = ` {bold}Body Type:{/}  ${bTypeButtons}\n`;
+      const rawBody = isEditingContent ? this.inlineText : (req.bodyContent || '');
+      content += renderInlineBlock(
+        rawBody,
+        isEditingContent,
+        this.inlineCursor,
+        req.bodyType === 'formUrlEncoded' ? 'key=value' : '{\n  "key": "value"\n}',
+        false
+      );
+      if (rawBody.includes('{{')) {
+        content += `\n\n {${t.subtext}-fg}--- Resolved Body Preview ---{/}\n`;
+        content += Interpolator.interpolateWithColor(rawBody, this.collection, t.accent, t.delete);
       }
     } else if (this.activeRequestTab === 'auth') {
       const mode = req.authType;
@@ -677,20 +730,14 @@ export class BruiApp {
                  `{bold}{${t.get}-fg}[ Save (Press 'S') ]{/}  ` +
                  `{bold}{${t.delete}-fg}[ Revert (Press 'R') ]{/}`;
     } else if (this.activeRequestTab === 'pre-script') {
-      content = ` {bold}{${t.put}-fg}[ Edit Pre-Script (Press 'I' or Click) ]{/}   ` +
-                `{bold}{${t.get}-fg}[ Save .bru (Press 'S') ]{/}   ` +
-                `{bold}{${t.delete}-fg}[ Revert (Press 'R') ]{/}\n\n` +
-                (req.preRequestScript || `{${t.subtext}-fg}No pre-request script.{/}`);
+      const rawPre = isEditingContent ? this.inlineText : (req.preRequestScript || '');
+      content = renderInlineBlock(rawPre, isEditingContent, this.inlineCursor, '// Pre-request JavaScript');
     } else if (this.activeRequestTab === 'post-script') {
-      content = ` {bold}{${t.put}-fg}[ Edit Post-Script (Press 'I' or Click) ]{/}   ` +
-                `{bold}{${t.get}-fg}[ Save .bru (Press 'S') ]{/}   ` +
-                `{bold}{${t.delete}-fg}[ Revert (Press 'R') ]{/}\n\n` +
-                (req.postResponseScript || `{${t.subtext}-fg}No post-response script.{/}`);
+      const rawPost = isEditingContent ? this.inlineText : (req.postResponseScript || '');
+      content = renderInlineBlock(rawPost, isEditingContent, this.inlineCursor, '// Post-response JavaScript');
     } else if (this.activeRequestTab === 'docs') {
-      content = ` {bold}{${t.put}-fg}[ Edit Docs (Press 'I' or Click) ]{/}   ` +
-                `{bold}{${t.get}-fg}[ Save .bru (Press 'S') ]{/}   ` +
-                `{bold}{${t.delete}-fg}[ Revert (Press 'R') ]{/}\n\n` +
-                Interpolator.highlightVariables(req.docs || `{${t.subtext}-fg}No documentation available.{/}`, this.collection, t.accent, t.delete);
+      const rawDocs = isEditingContent ? this.inlineText : (req.docs || '');
+      content = renderInlineBlock(rawDocs, isEditingContent, this.inlineCursor, '# Request Documentation');
     }
 
     this.requestContentBox.setContent(content);
@@ -808,10 +855,129 @@ export class BruiApp {
     this.updateRequestView();
   }
 
+  private getTabEditableText(req: BrunoRequest): string {
+    if (this.activeRequestTab === 'headers') {
+      return req.headers.map(h => `${h.name}: ${h.value}`).join('\n');
+    }
+    if (this.activeRequestTab === 'params') {
+      return req.params.map(p => `${p.name}=${p.value}`).join('\n');
+    }
+    if (this.activeRequestTab === 'body') {
+      return req.bodyContent || '';
+    }
+    if (this.activeRequestTab === 'pre-script') {
+      return req.preRequestScript || '';
+    }
+    if (this.activeRequestTab === 'post-script') {
+      return req.postResponseScript || '';
+    }
+    if (this.activeRequestTab === 'docs') {
+      return req.docs || '';
+    }
+    return '';
+  }
+
+  private applyTabEditableText(req: BrunoRequest, text: string) {
+    if (this.activeRequestTab === 'headers') {
+      req.headers = text
+        .split(/\r?\n/)
+        .filter(l => l.trim().length > 0)
+        .map(l => {
+          const sep = l.indexOf(':');
+          if (sep === -1) return { name: l.trim(), value: '', enabled: true };
+          return {
+            name: l.slice(0, sep).trim(),
+            value: l.slice(sep + 1).trim(),
+            enabled: true
+          };
+        });
+    } else if (this.activeRequestTab === 'params') {
+      req.params = text
+        .split(/\r?\n/)
+        .filter(l => l.trim().length > 0)
+        .map(l => {
+          const sep = l.indexOf('=');
+          if (sep === -1) return { name: l.trim(), value: '', enabled: true };
+          return {
+            name: l.slice(0, sep).trim(),
+            value: l.slice(sep + 1).trim(),
+            enabled: true
+          };
+        });
+    } else if (this.activeRequestTab === 'body') {
+      if (req.bodyType === 'none' && text.trim().length > 0) {
+        req.bodyType = text.trim().startsWith('{') ? 'json' : 'text';
+      }
+      req.bodyContent = text;
+    } else if (this.activeRequestTab === 'pre-script') {
+      req.preRequestScript = text;
+    } else if (this.activeRequestTab === 'post-script') {
+      req.postResponseScript = text;
+    } else if (this.activeRequestTab === 'docs') {
+      req.docs = text;
+    }
+    this.modifiedRequests.add(req.id);
+    this.renderSidebar();
+  }
+
+  private activateInlineEdit(target: 'url' | 'content', clickRow?: number, clickCol?: number) {
+    const req = this.selectedRequest;
+    if (!req) return;
+    if (target === 'content' && this.activeRequestTab === 'auth') return;
+
+    const t = this.getTheme();
+    this.inlineTarget = target;
+
+    if (target === 'url') {
+      this.inlineText = req.url;
+      this.inlineCursor = clickCol !== undefined
+        ? Math.max(0, Math.min(this.inlineText.length, clickCol))
+        : this.inlineText.length;
+      this.requestHeaderBox.focus();
+    } else {
+      if (this.activeRequestTab === 'body' && req.bodyType === 'none') {
+        req.bodyType = 'json';
+        if (!req.bodyContent) {
+          req.bodyContent = '{\n  \n}';
+        }
+      }
+      this.inlineText = this.getTabEditableText(req);
+      if (clickRow !== undefined && clickCol !== undefined) {
+        const lines = this.inlineText.split('\n');
+        const r = Math.max(0, Math.min(lines.length - 1, clickRow));
+        const c = Math.max(0, Math.min(lines[r].length, clickCol));
+        let offset = 0;
+        for (let i = 0; i < r; i++) {
+          offset += lines[i].length + 1;
+        }
+        this.inlineCursor = offset + c;
+      } else {
+        this.inlineCursor = this.inlineText.length;
+      }
+      this.requestContentBox.focus();
+    }
+
+    this.requestPane.style.border.fg = t.borderFocus;
+    this.sidebarList.style.border.fg = t.border;
+    this.updateRequestView();
+    this.updateStatusBar(`Editing ${target === 'url' ? 'URL' : this.activeRequestTab} inline — Type directly | [Ctrl+S] Save .bru | [Esc] Done`);
+  }
+
+  private deactivateInlineEdit() {
+    if (this.inlineTarget === 'none') return;
+    const t = this.getTheme();
+    this.inlineTarget = 'none';
+    this.requestPane.style.border.fg = t.border;
+    this.sidebarList.style.border.fg = t.borderFocus;
+    this.sidebarList.focus();
+    this.updateRequestView();
+    this.updateStatusBar('Ready');
+  }
+
   private bindEvents() {
     // 1. Sidebar keyboard Enter -> toggle folder or select request
     this.sidebarList.key(['enter'], () => {
-      if (this.isModalOpen()) return;
+      if (this.isModalOpen() || this.inlineTarget !== 'none') return;
       const idx = (this.sidebarList as any).selected;
       this.handleTreeSelection(idx);
     });
@@ -823,6 +989,12 @@ export class BruiApp {
       const target = this.visibleTreeItems[index];
       if (target && target.type === 'request') {
         this.selectedRequest = target.request;
+        if (this.inlineTarget !== 'none') {
+          this.inlineText = this.inlineTarget === 'url'
+            ? target.request.url
+            : this.getTabEditableText(target.request);
+          this.inlineCursor = this.inlineText.length;
+        }
         this.updateRequestView();
       }
     });
@@ -830,6 +1002,7 @@ export class BruiApp {
     // 2. Mouse click on any item in sidebar -> single-click opens API or toggles folder
     this.sidebarList.on('element click', (el: any) => {
       if (this.isModalOpen()) return;
+      this.deactivateInlineEdit();
       const items = (this.sidebarList as any).items as any[];
       const idx = items ? items.indexOf(el) : -1;
       if (idx >= 0) {
@@ -841,6 +1014,7 @@ export class BruiApp {
     // 3. Mouse click on Header -> Open Collection or Env based on click position
     this.headerBox.on('click', (data: any) => {
       if (this.isModalOpen()) return;
+      this.deactivateInlineEdit();
       const pos = (this.headerBox as any).lpos;
       if (!pos || !data || typeof data.x !== 'number') {
         this.openCollectionModal();
@@ -861,8 +1035,8 @@ export class BruiApp {
       }
     });
 
-    // 3b. Mouse click on Request Header Box -> Method, URL, [U: Edit URL], [I: Edit Tab], [S: Save .bru], [R: Revert]
-    this.requestHeaderBox.on('click', (data: any) => {
+    // 3b. Mouse click on Request Header Box -> Method, inline URL edit, [Send], [Save .bru], [Revert]
+    this.requestHeaderBox.on('click', async (data: any) => {
       if (this.isModalOpen() || !this.selectedRequest) return;
       const pos = (this.requestHeaderBox as any).lpos;
       if (!pos || !data || typeof data.x !== 'number') return;
@@ -876,24 +1050,23 @@ export class BruiApp {
           this.cycleActiveRequestMethod();
           return;
         }
-        this.editActiveRequestUrl();
+        const urlCol = Math.max(0, relX - (methodBtnLen + 2));
+        this.activateInlineEdit('url', 0, urlCol);
       } else if (relY === 1) {
-        // Line 2: " [U: Edit URL]  [I: Edit Tab]  [S: Save .bru]  [R: Revert]"
-        if (relX < 15) {
-          this.editActiveRequestUrl();
-        } else if (relX < 30) {
-          this.editActiveTab();
-        } else if (relX < 46) {
+        // Line 2: " [Send]  [Save .bru (Ctrl+S)]  [Revert]"
+        if (relX < 9) {
+          await this.sendActiveRequest();
+        } else if (relX < 31) {
           this.saveActiveRequest();
-        } else if (relX < 59) {
+        } else if (relX < 41) {
           this.revertActiveRequest();
         } else {
-          this.editActiveRequestUrl();
+          this.activateInlineEdit('url');
         }
       }
     });
 
-    // 4. Mouse click on Request Tabs -> Select exact clicked tab
+    // 4. Mouse click on Request Tabs -> Select exact clicked tab and enter direct inline editing
     this.requestTabsBox.on('click', (data: any) => {
       if (this.isModalOpen()) return;
       const pos = (this.requestTabsBox as any).lpos;
@@ -902,7 +1075,12 @@ export class BruiApp {
         const hit = this.requestTabRanges.find(r => relX >= r.start && relX <= r.end);
         if (hit) {
           this.activeRequestTab = hit.id;
-          this.updateRequestView();
+          if (hit.id === 'auth') {
+            this.deactivateInlineEdit();
+            this.updateRequestView();
+          } else {
+            this.activateInlineEdit('content');
+          }
           return;
         }
       }
@@ -923,37 +1101,175 @@ export class BruiApp {
       }
     });
 
-    // 6. Global Hotkeys
+    // 6. Direct Inline Editor Keypress Handler (URL, Headers, Params, Body, Scripts, Docs)
+    this.screen.on('keypress', (ch: any, key: any) => {
+      if (this.isModalOpen() || this.inlineTarget === 'none' || !this.selectedRequest) return;
+      const req = this.selectedRequest;
+      const kName = key?.name || '';
+
+      if (kName === 'escape') {
+        this.deactivateInlineEdit();
+        return;
+      }
+
+      if ((key?.ctrl && kName === 's') || kName === 'f2') {
+        this.saveActiveRequest();
+        return;
+      }
+
+      if (key?.ctrl && kName === 'r') {
+        this.revertActiveRequest();
+        return;
+      }
+
+      if (kName === 'return') {
+        return;
+      }
+
+      const isSingleLine = this.inlineTarget === 'url';
+
+      if (kName === 'enter') {
+        if (isSingleLine) {
+          this.deactivateInlineEdit();
+        } else {
+          this.inlineText = this.inlineText.slice(0, this.inlineCursor) + '\n' + this.inlineText.slice(this.inlineCursor);
+          this.inlineCursor += 1;
+          this.applyTabEditableText(req, this.inlineText);
+          this.updateRequestView();
+        }
+        return;
+      }
+
+      if (kName === 'backspace') {
+        if (this.inlineCursor > 0) {
+          this.inlineText = this.inlineText.slice(0, this.inlineCursor - 1) + this.inlineText.slice(this.inlineCursor);
+          this.inlineCursor -= 1;
+          if (isSingleLine) {
+            req.url = this.inlineText;
+            this.modifiedRequests.add(req.id);
+            this.renderSidebar();
+          } else {
+            this.applyTabEditableText(req, this.inlineText);
+          }
+          this.updateRequestView();
+        }
+        return;
+      }
+
+      if (kName === 'delete') {
+        if (this.inlineCursor < this.inlineText.length) {
+          this.inlineText = this.inlineText.slice(0, this.inlineCursor) + this.inlineText.slice(this.inlineCursor + 1);
+          if (isSingleLine) {
+            req.url = this.inlineText;
+            this.modifiedRequests.add(req.id);
+            this.renderSidebar();
+          } else {
+            this.applyTabEditableText(req, this.inlineText);
+          }
+          this.updateRequestView();
+        }
+        return;
+      }
+
+      if (kName === 'left') {
+        if (this.inlineCursor > 0) {
+          this.inlineCursor -= 1;
+          this.updateRequestView();
+        }
+        return;
+      }
+
+      if (kName === 'right') {
+        if (this.inlineCursor < this.inlineText.length) {
+          this.inlineCursor += 1;
+          this.updateRequestView();
+        }
+        return;
+      }
+
+      if (kName === 'home' || (key?.ctrl && kName === 'a')) {
+        const lineStart = this.inlineText.lastIndexOf('\n', this.inlineCursor - 1) + 1;
+        this.inlineCursor = lineStart;
+        this.updateRequestView();
+        return;
+      }
+
+      if (kName === 'end' || (key?.ctrl && kName === 'e')) {
+        const nextNl = this.inlineText.indexOf('\n', this.inlineCursor);
+        this.inlineCursor = nextNl === -1 ? this.inlineText.length : nextNl;
+        this.updateRequestView();
+        return;
+      }
+
+      if (!isSingleLine && (kName === 'up' || kName === 'down')) {
+        const lines = this.inlineText.split('\n');
+        let rem = this.inlineCursor;
+        let curRow = 0;
+        let curCol = 0;
+        for (let i = 0; i < lines.length; i++) {
+          if (rem <= lines[i].length) {
+            curRow = i;
+            curCol = rem;
+            break;
+          }
+          rem -= lines[i].length + 1;
+        }
+        const targetRow = kName === 'up' ? Math.max(0, curRow - 1) : Math.min(lines.length - 1, curRow + 1);
+        const targetCol = Math.min(curCol, lines[targetRow].length);
+        let newCursor = 0;
+        for (let i = 0; i < targetRow; i++) {
+          newCursor += lines[i].length + 1;
+        }
+        this.inlineCursor = newCursor + targetCol;
+        this.updateRequestView();
+        return;
+      }
+
+      if (ch && !key?.ctrl && !key?.meta && !/^[\x00-\x1f\x7f]$/.test(ch)) {
+        this.inlineText = this.inlineText.slice(0, this.inlineCursor) + ch + this.inlineText.slice(this.inlineCursor);
+        this.inlineCursor += ch.length;
+        if (isSingleLine) {
+          req.url = this.inlineText;
+          this.modifiedRequests.add(req.id);
+          this.renderSidebar();
+        } else {
+          this.applyTabEditableText(req, this.inlineText);
+        }
+        this.updateRequestView();
+      }
+    });
+
+    // 7. Global Hotkeys (active when not in modal and not typing inline)
     this.screen.key(['C-c'], () => {
       return process.exit(0);
     });
 
     this.screen.key(['q'], () => {
-      if (this.isModalOpen()) return;
+      if (this.isModalOpen() || this.inlineTarget !== 'none') return;
       return process.exit(0);
     });
 
     // Space key: Send request
     this.screen.key(['space'], async () => {
-      if (this.isModalOpen()) return;
+      if (this.isModalOpen() || this.inlineTarget !== 'none') return;
       await this.sendActiveRequest();
     });
 
     // Open Collection Picker
     this.screen.key(['c', 'C'], () => {
-      if (this.isModalOpen()) return;
+      if (this.isModalOpen() || this.inlineTarget !== 'none') return;
       this.openCollectionModal();
     });
 
     // OAuth2 Trigger
     this.screen.key(['o', 'O'], async () => {
-      if (this.isModalOpen()) return;
+      if (this.isModalOpen() || this.inlineTarget !== 'none') return;
       await this.triggerOAuth2();
     });
 
     // Cycle Theme
     this.screen.key(['t', 'T'], () => {
-      if (this.isModalOpen()) return;
+      if (this.isModalOpen() || this.inlineTarget !== 'none') return;
       const newTheme = this.themeManager.cycle();
       this.applyTheme();
       this.renderSidebar();
@@ -964,45 +1280,42 @@ export class BruiApp {
 
     // Environment Modal
     this.screen.key(['e', 'E'], () => {
-      if (this.isModalOpen()) return;
+      if (this.isModalOpen() || this.inlineTarget !== 'none') return;
       this.openEnvironmentModal();
     });
 
     // Edit URL [U]
     this.screen.key(['u', 'U'], () => {
-      if (this.isModalOpen()) return;
-      this.editActiveRequestUrl();
+      if (this.isModalOpen() || this.inlineTarget !== 'none') return;
+      this.activateInlineEdit('url');
     });
 
     // Edit active tab content [I]
     this.screen.key(['i', 'I'], () => {
-      if (this.isModalOpen()) return;
-      this.editActiveTab();
+      if (this.isModalOpen() || this.inlineTarget !== 'none') return;
+      this.activateInlineEdit('content');
     });
 
     // Number keys for request tabs
-    this.screen.key(['1'], () => { if (!this.isModalOpen()) { this.activeRequestTab = 'headers'; this.updateRequestView(); } });
-    this.screen.key(['2'], () => { if (!this.isModalOpen()) { this.activeRequestTab = 'params'; this.updateRequestView(); } });
-    this.screen.key(['3'], () => { if (!this.isModalOpen()) { this.activeRequestTab = 'body'; this.updateRequestView(); } });
-    this.screen.key(['4'], () => { if (!this.isModalOpen()) { this.activeRequestTab = 'auth'; this.updateRequestView(); } });
-    this.screen.key(['5'], () => { if (!this.isModalOpen()) { this.activeRequestTab = 'pre-script'; this.updateRequestView(); } });
-    this.screen.key(['6'], () => { if (!this.isModalOpen()) { this.activeRequestTab = 'post-script'; this.updateRequestView(); } });
-    this.screen.key(['7'], () => { if (!this.isModalOpen()) { this.activeRequestTab = 'docs'; this.updateRequestView(); } });
+    this.screen.key(['1'], () => { if (!this.isModalOpen() && this.inlineTarget === 'none') { this.activeRequestTab = 'headers'; this.updateRequestView(); } });
+    this.screen.key(['2'], () => { if (!this.isModalOpen() && this.inlineTarget === 'none') { this.activeRequestTab = 'params'; this.updateRequestView(); } });
+    this.screen.key(['3'], () => { if (!this.isModalOpen() && this.inlineTarget === 'none') { this.activeRequestTab = 'body'; this.updateRequestView(); } });
+    this.screen.key(['4'], () => { if (!this.isModalOpen() && this.inlineTarget === 'none') { this.activeRequestTab = 'auth'; this.updateRequestView(); } });
+    this.screen.key(['5'], () => { if (!this.isModalOpen() && this.inlineTarget === 'none') { this.activeRequestTab = 'pre-script'; this.updateRequestView(); } });
+    this.screen.key(['6'], () => { if (!this.isModalOpen() && this.inlineTarget === 'none') { this.activeRequestTab = 'post-script'; this.updateRequestView(); } });
+    this.screen.key(['7'], () => { if (!this.isModalOpen() && this.inlineTarget === 'none') { this.activeRequestTab = 'docs'; this.updateRequestView(); } });
 
-    // Tab key switches focus
+    // Tab key toggles between Sidebar and Direct Inline Editor
     this.screen.key(['tab'], () => {
       if (this.isModalOpen()) return;
-      if (this.screen.focused === this.sidebarList) {
-        this.responseContentBox.focus();
-      } else if (this.screen.focused === this.responseContentBox) {
-        this.requestContentBox.focus();
+      if (this.inlineTarget !== 'none') {
+        this.deactivateInlineEdit();
       } else {
-        this.sidebarList.focus();
+        this.activateInlineEdit('content');
       }
-      this.screen.render();
     });
 
-    // Mouse click on Request Content Box (Handles interactive actions across all tabs)
+    // Mouse click on Request Content Box -> Direct inline editing at exact clicked line & column!
     this.requestContentBox.on('click', async (data: any) => {
       if (this.isModalOpen() || !this.selectedRequest) return;
       const req = this.selectedRequest;
@@ -1015,24 +1328,10 @@ export class BruiApp {
       const lines = (this.requestContentBox.getContent() || '').split('\n');
       const clickedLine = lines[relY] || '';
 
-      // Common Save / Revert buttons on action lines
-      if (clickedLine.includes('Save .bru') || clickedLine.includes('Save (Press')) {
-        if (clickedLine.includes('Revert') && relX > 72) {
-          this.revertActiveRequest();
-          return;
-        }
-        if (relX < 46) {
-          this.editActiveTab();
-        } else if (relX < 72) {
-          this.saveActiveRequest();
-        } else {
-          this.revertActiveRequest();
-        }
-        return;
-      }
-
-      if (this.activeRequestTab === 'headers' || this.activeRequestTab === 'params') {
-        this.editActiveTab();
+      if (this.activeRequestTab === 'headers' || this.activeRequestTab === 'params' ||
+          this.activeRequestTab === 'pre-script' || this.activeRequestTab === 'post-script' ||
+          this.activeRequestTab === 'docs') {
+        this.activateInlineEdit('content', relY, Math.max(0, relX - 6));
         return;
       }
 
@@ -1042,16 +1341,14 @@ export class BruiApp {
           if (hitBt) {
             req.bodyType = hitBt.id;
             this.markRequestModified(req);
+            this.activateInlineEdit('content');
             this.updateStatusBar(`Body type set to: ${hitBt.id}`);
             return;
           }
+          this.activateInlineEdit('content', 0, 0);
+          return;
         }
-        this.editActiveTab();
-        return;
-      }
-
-      if (this.activeRequestTab === 'pre-script' || this.activeRequestTab === 'post-script' || this.activeRequestTab === 'docs') {
-        this.editActiveTab();
+        this.activateInlineEdit('content', relY - 1, Math.max(0, relX - 6));
         return;
       }
 
@@ -1097,13 +1394,13 @@ export class BruiApp {
 
     // Hotkey [A]: Auth Manager Dialog
     this.screen.key(['a', 'A'], () => {
-      if (this.isModalOpen()) return;
+      if (this.isModalOpen() || this.inlineTarget !== 'none') return;
       this.openAuthManagerModal();
     });
 
     // Hotkey [M]: Cycle Auth Mode (if on Auth Tab) or HTTP Method
     this.screen.key(['m', 'M'], () => {
-      if (this.isModalOpen() || !this.selectedRequest) return;
+      if (this.isModalOpen() || this.inlineTarget !== 'none' || !this.selectedRequest) return;
       if (this.activeRequestTab === 'auth') {
         const modes: Array<BrunoRequest['authType']> = ['inherit', 'none', 'bearer', 'basic', 'oauth2'];
         const curIdx = modes.indexOf(this.selectedRequest.authType);
@@ -1118,13 +1415,13 @@ export class BruiApp {
 
     // Hotkey [S]: Save entire request to .bru file
     this.screen.key(['s', 'S'], () => {
-      if (this.isModalOpen()) return;
+      if (this.isModalOpen() || this.inlineTarget !== 'none') return;
       this.saveActiveRequest();
     });
 
     // Hotkey [R]: Revert request from .bru file on disk
     this.screen.key(['r', 'R'], () => {
-      if (this.isModalOpen()) return;
+      if (this.isModalOpen() || this.inlineTarget !== 'none') return;
       this.revertActiveRequest();
     });
   }
@@ -1140,101 +1437,14 @@ export class BruiApp {
   }
 
   private editActiveRequestUrl() {
-    const req = this.selectedRequest;
-    if (!req) return;
-    this.openSingleLinePrompt(`Edit URL for [${req.method} ${req.name}]`, req.url, (newUrl) => {
-      if (newUrl.trim() && newUrl !== req.url) {
-        req.url = newUrl.trim();
-        this.markRequestModified(req);
-        this.updateStatusBar(`Updated URL (Press [S] to save or [R] to revert)`);
-      }
-    });
+    this.activateInlineEdit('url');
   }
 
   private editActiveTab() {
-    const req = this.selectedRequest;
-    if (!req) return;
-
-    if (this.activeRequestTab === 'headers') {
-      const initialHeaders = req.headers.map(h => `${h.name}: ${h.value}`).join('\n');
-      this.openMultiLineEditor(
-        `Edit Headers for [${req.name}] (One per line: Header-Name: value)`,
-        initialHeaders,
-        (val) => {
-          const parsedHeaders = val
-            .split(/\r?\n/)
-            .map(l => l.trim())
-            .filter(l => l.length > 0)
-            .map(l => {
-              const sep = l.indexOf(':');
-              if (sep === -1) return { name: l.trim(), value: '', enabled: true };
-              return {
-                name: l.slice(0, sep).trim(),
-                value: l.slice(sep + 1).trim(),
-                enabled: true
-              };
-            })
-            .filter(h => h.name.length > 0);
-          req.headers = parsedHeaders;
-          this.markRequestModified(req);
-          this.updateStatusBar(`Updated ${req.headers.length} header(s) (Press [S] to save or [R] to revert)`);
-        }
-      );
-    } else if (this.activeRequestTab === 'params') {
-      const initialParams = req.params.map(p => `${p.name}=${p.value}`).join('\n');
-      this.openMultiLineEditor(
-        `Edit Query Params for [${req.name}] (One per line: key=value)`,
-        initialParams,
-        (val) => {
-          const parsedParams = val
-            .split(/\r?\n/)
-            .map(l => l.trim())
-            .filter(l => l.length > 0)
-            .map(l => {
-              const sep = l.indexOf('=');
-              if (sep === -1) return { name: l.trim(), value: '', enabled: true };
-              return {
-                name: l.slice(0, sep).trim(),
-                value: l.slice(sep + 1).trim(),
-                enabled: true
-              };
-            })
-            .filter(p => p.name.length > 0);
-          req.params = parsedParams;
-          this.markRequestModified(req);
-          this.updateStatusBar(`Updated ${req.params.length} param(s) (Press [S] to save or [R] to revert)`);
-        }
-      );
-    } else if (this.activeRequestTab === 'body') {
-      if (req.bodyType === 'none') {
-        req.bodyType = 'json';
-      }
-      const defaultBody = req.bodyContent || (req.bodyType === 'json' ? '{\n  \n}' : '');
-      this.openMultiLineEditor(`Edit Request Body (${req.bodyType.toUpperCase()})`, defaultBody, (newBody) => {
-        req.bodyContent = newBody;
-        this.markRequestModified(req);
-        this.updateStatusBar(`Body updated (Press [S] to save or [R] to revert)`);
-      });
-    } else if (this.activeRequestTab === 'auth') {
+    if (this.activeRequestTab === 'auth') {
       this.openAuthManagerModal();
-    } else if (this.activeRequestTab === 'pre-script') {
-      this.openMultiLineEditor('Edit Pre-Request Script (JS)', req.preRequestScript || '', (newScript) => {
-        req.preRequestScript = newScript;
-        this.markRequestModified(req);
-        this.updateStatusBar(`Pre-request script updated`);
-      });
-    } else if (this.activeRequestTab === 'post-script') {
-      this.openMultiLineEditor('Edit Post-Response Script (JS)', req.postResponseScript || '', (newScript) => {
-        req.postResponseScript = newScript;
-        this.markRequestModified(req);
-        this.updateStatusBar(`Post-response script updated`);
-      });
-    } else if (this.activeRequestTab === 'docs') {
-      this.openMultiLineEditor('Edit Request Documentation (Markdown)', req.docs || '', (newDocs) => {
-        req.docs = newDocs;
-        this.markRequestModified(req);
-        this.updateStatusBar(`Documentation updated`);
-      });
+    } else {
+      this.activateInlineEdit('content');
     }
   }
 
@@ -1931,6 +2141,13 @@ export class BruiApp {
       req.docs = fresh.docs;
 
       this.modifiedRequests.delete(req.id);
+      if (this.inlineTarget === 'url') {
+        this.inlineText = req.url;
+        this.inlineCursor = this.inlineText.length;
+      } else if (this.inlineTarget === 'content') {
+        this.inlineText = this.getTabEditableText(req);
+        this.inlineCursor = this.inlineText.length;
+      }
       this.renderSidebar();
       this.updateRequestView();
       this.updateStatusBar(`Reverted ${req.name} from ${path.basename(req.filePath)}`);

@@ -10,32 +10,43 @@ export class EnvironmentManagerModal {
   private collection: BrunoCollection;
   private themeManager: ThemeManager;
   private onUpdate: () => void;
+  private onClose?: () => void;
 
   private modal?: blessed.Widgets.BoxElement;
   private selectedEnvIndex: number = 0;
   private selectedVarIndex: number = 0;
   private activeFocusPane: 'envs' | 'vars' = 'envs';
+  private isPromptOpen: boolean = false;
 
   // Widgets
   private envsList!: blessed.Widgets.ListElement;
   private varsList!: blessed.Widgets.ListElement;
   private statusBox!: blessed.Widgets.BoxElement;
   private footerBar!: blessed.Widgets.BoxElement;
+  private closeBtn!: blessed.Widgets.BoxElement;
+
+  private keypressHandler?: (ch: any, key: any) => void;
 
   constructor(
     screen: blessed.Widgets.Screen,
     collection: BrunoCollection,
     themeManager: ThemeManager,
-    onUpdate: () => void
+    onUpdate: () => void,
+    onClose?: () => void
   ) {
     this.screen = screen;
     this.collection = collection;
     this.themeManager = themeManager;
     this.onUpdate = onUpdate;
+    this.onClose = onClose;
   }
 
   private getTheme(): ThemeColors {
     return this.themeManager.getCurrent();
+  }
+
+  public isOpen(): boolean {
+    return !!this.modal;
   }
 
   public show() {
@@ -55,6 +66,7 @@ export class EnvironmentManagerModal {
     );
     this.selectedEnvIndex = curActiveIdx !== -1 ? curActiveIdx : 0;
     this.activeFocusPane = 'envs';
+    this.isPromptOpen = false;
 
     this.modal = blessed.box({
       parent: this.screen,
@@ -77,12 +89,27 @@ export class EnvironmentManagerModal {
       parent: this.modal,
       top: 0,
       left: 1,
-      right: 1,
+      right: 12,
       height: 2,
       content: ` {bold}{${t.accent}-fg}🌍 ENVIRONMENT & VARIABLES MANAGER{/}  ` +
-               `{${t.subtext}-fg}Active:{/} {bold}{${t.options}-fg}[${this.collection.activeEnvironment || 'None'}]{/}  ` +
-               `{right}{${t.subtext}-fg}[Tab to switch panel | Esc to close]{/} `,
+               `{${t.subtext}-fg}Active:{/} {bold}{${t.options}-fg}[${this.collection.activeEnvironment || 'None'}]{/} `,
       tags: true
+    });
+
+    // Top Right Close Button [ ✕ Close ]
+    this.closeBtn = blessed.box({
+      parent: this.modal,
+      top: 0,
+      right: 1,
+      width: 11,
+      height: 1,
+      content: `{bold}{${t.delete}-fg}[ ✕ Close ]{/}`,
+      tags: true,
+      mouse: true,
+      style: {
+        bg: t.surface,
+        hover: { bg: t.surfaceHover }
+      }
     });
 
     // Left Pane: Environments List (width 32%)
@@ -93,6 +120,7 @@ export class EnvironmentManagerModal {
       width: '32%',
       bottom: 4,
       border: { type: 'line' },
+      label: ` {bold}{${t.accent}-fg}Environments{/} `,
       keys: true,
       vi: true,
       mouse: true,
@@ -120,6 +148,7 @@ export class EnvironmentManagerModal {
       right: 1,
       bottom: 4,
       border: { type: 'line' },
+      label: ` {bold}{${t.put}-fg}Variables (Enter / E to Edit){/} `,
       keys: true,
       vi: true,
       mouse: true,
@@ -178,13 +207,12 @@ export class EnvironmentManagerModal {
 
     const items = envs.map(e => {
       const isCur = e.name === this.collection.activeEnvironment;
-      const bullet = isCur ? `{${t.get}-fg}●{/} {bold}${e.name}{/}` : `  ${e.name}`;
-      const count = Object.keys(e.variables).length;
-      return `${bullet} {${t.subtext}-fg}(${count}){/}`;
+      const bullet = isCur ? `{${t.get}-fg}● (active){/} ` : `{${t.subtext}-fg}○{/} `;
+      const varCount = Object.keys(e.variables).length;
+      return `${bullet}{bold}${e.name}{/} {${t.subtext}-fg}(${varCount}){/}`;
     });
 
     items.push(`{${t.put}-fg}[+ New Environment]{/}`);
-
     this.envsList.setItems(items);
   }
 
@@ -192,7 +220,7 @@ export class EnvironmentManagerModal {
     const t = this.getTheme();
     const env = this.collection.environments[this.selectedEnvIndex];
     if (!env) {
-      this.varsList.setItems(['No environment selected']);
+      this.varsList.setItems([`{${t.subtext}-fg}No environment selected{/}`]);
       return;
     }
 
@@ -204,21 +232,15 @@ export class EnvironmentManagerModal {
       return;
     }
 
-    const items = entries.map(([name, val], idx) => {
-      const isSecret = name.toLowerCase().includes('secret') || name.toLowerCase().includes('password');
-      let displayVal = val;
-      if (isSecret && val && val.length > 4) {
-        displayVal = val.slice(0, 3) + '••••••••' + val.slice(-3);
+    const items = entries.map(([key, val]) => {
+      const isSecret = key.toLowerCase().includes('secret') || key.toLowerCase().includes('password');
+      let displayVal = String(val ?? '');
+      if (isSecret && displayVal.length > 0) {
+        displayVal = '•••••••• (' + displayVal.slice(0, 3) + '...)';
+      } else if (displayVal.length > 55) {
+        displayVal = displayVal.slice(0, 52) + '...';
       }
-      if (!val) {
-        displayVal = '{#6c7086-fg}(empty){/}';
-      }
-
-      const num = String(idx + 1).padStart(2, ' ');
-      const typeBadge = isSecret ? `{${t.delete}-fg}[SECRET]{/}` : `{${t.put}-fg}[TEXT]{/}`;
-      const nameCol = `{bold}{${t.options}-fg}${name.padEnd(26)}{/}`;
-
-      return ` ${num}. ${typeBadge} ${nameCol} = {${t.get}-fg}${displayVal}{/}`;
+      return `{bold}{${t.accent}-fg}${key}:{/} {${t.fg}}${displayVal || '{#6c7086-fg}(empty){/}'}{/}`;
     });
 
     this.varsList.setItems(items);
@@ -229,28 +251,24 @@ export class EnvironmentManagerModal {
     const env = this.collection.environments[this.selectedEnvIndex];
     const isCur = env?.name === this.collection.activeEnvironment;
 
-    if (this.activeFocusPane === 'envs') {
-      this.footerBar.setContent(
-        ` {bold}[Enter/Click]{/} ${isCur ? '{#6c7086-fg}(Already Active){/}' : '{#a6e3a1-fg}ACTIVATE ENVIRONMENT{/}'}  ` +
-        `{bold}[Tab]{/} Edit Variables  ` +
-        `{bold}[N]{/} New Env  ` +
-        `{bold}[Esc]{/} Close `
-      );
-    } else {
-      this.footerBar.setContent(
-        ` {bold}[Enter/Click]{/} {#cba6f7-fg}EDIT VALUE{/}  ` +
-        `{bold}[Tab]{/} Switch to Envs  ` +
-        `{bold}[N]{/} Add Var  ` +
-        `{bold}[D]{/} Del Var  ` +
-        `{bold}[S]{/} Save File  ` +
-        `{bold}[Esc]{/} Close `
-      );
-    }
+    const activateBtn = isCur
+      ? `{${t.subtext}-fg}[✔ Active]{/}`
+      : `{bold}{${t.get}-fg}[A: Set Active]{/}`;
+
+    this.footerBar.setContent(
+      ` ${activateBtn}  ` +
+      `{bold}{${t.accent}-fg}[Enter/E: Edit Value]{/}  ` +
+      `{bold}{${t.put}-fg}[N: Add Var]{/}  ` +
+      `{bold}{${t.delete}-fg}[D: Delete]{/}  ` +
+      `{bold}{${t.options}-fg}[S: Save File]{/}  ` +
+      `{bold}[Tab: Switch Panel]{/}  ` +
+      `{bold}[Esc/q: Close]{/}`
+    );
   }
 
   private setStatus(msg: string) {
     const t = this.getTheme();
-    this.statusBox.setContent(` {bold}{${t.accent}-fg}Info:{/} ${msg}`);
+    this.statusBox.setContent(` {bold}{${t.accent}-fg}Status:{/} ${msg}`);
     this.screen.render();
   }
 
@@ -267,15 +285,39 @@ export class EnvironmentManagerModal {
     this.screen.render();
   }
 
+  public activateSelectedEnv() {
+    const env = this.collection.environments[this.selectedEnvIndex];
+    if (env) {
+      this.collection.activeEnvironment = env.name;
+      this.renderEnvsList();
+      this.renderFooter();
+      this.setStatus(`✔ Active environment changed to: [${env.name}]`);
+      this.onUpdate();
+    }
+  }
+
   private bindEvents() {
     const closeModal = () => {
       if (this.modal) {
+        if (this.keypressHandler) {
+          this.screen.removeListener('keypress', this.keypressHandler);
+          this.keypressHandler = undefined;
+        }
         this.modal.destroy();
         this.modal = undefined;
+        this.isPromptOpen = false;
         this.onUpdate();
+        if (this.onClose) {
+          this.onClose();
+        }
         this.screen.render();
       }
     };
+
+    // Close button click [ ✕ Close ]
+    this.closeBtn.on('click', () => {
+      closeModal();
+    });
 
     // 1. Envs List: Selection preview
     this.envsList.on('select item', (_item: any, index: number) => {
@@ -287,33 +329,34 @@ export class EnvironmentManagerModal {
       }
     });
 
-    // 2. Envs List: Enter / Click -> Activate Environment or Add New Env!
+    // 2. Envs List: Enter / Click
     this.envsList.on('select', (_item: any, index: number) => {
       const envs = this.collection.environments;
       if (index === envs.length) {
-        // [+ New Environment]
         this.promptAddEnvironment();
       } else {
-        const selected = envs[index];
-        if (selected) {
-          this.collection.activeEnvironment = selected.name;
-          this.renderEnvsList();
-          this.renderFooter();
-          this.setStatus(`✔ Activated environment: [${selected.name}]`);
-          this.onUpdate();
-        }
+        this.activateSelectedEnv();
       }
     });
 
     // Click on Envs List switches focus
     this.envsList.on('click', () => {
       this.activeFocusPane = 'envs';
+      const idx = (this.envsList as any).selected;
+      if (typeof idx === 'number' && idx < this.collection.environments.length) {
+        this.selectedEnvIndex = idx;
+        this.activateSelectedEnv();
+      }
       this.updateBorders();
     });
 
-    // Click on Vars List switches focus
+    // Click on Vars List switches focus & allows editing
     this.varsList.on('click', () => {
       this.activeFocusPane = 'vars';
+      const idx = (this.varsList as any).selected;
+      if (typeof idx === 'number') {
+        this.selectedVarIndex = idx;
+      }
       this.updateBorders();
     });
 
@@ -322,48 +365,90 @@ export class EnvironmentManagerModal {
       this.selectedVarIndex = index;
     });
 
-    // 4. Vars List: Enter / Click -> Edit Variable Value!
+    // 4. Vars List: Enter -> Edit Variable Value!
     this.varsList.on('select', (_item: any, index: number) => {
       this.promptEditVariable(index);
     });
 
-    // 5. Global Modal Keys
-    this.modal!.key(['escape'], () => {
-      closeModal();
-    });
+    // 5. Global Keypress Handler (Directly on screen so Escape and shortcuts ALWAYS work!)
+    this.keypressHandler = (ch: any, key: any) => {
+      if (!this.modal) return;
+      if (this.isPromptOpen) return;
+      if (!key) return;
 
-    // Tab key toggles focus between Envs list and Vars list
-    this.modal!.key(['tab'], () => {
-      if (this.activeFocusPane === 'envs') {
-        this.activeFocusPane = 'vars';
-        this.varsList.focus();
-      } else {
+      // ESCAPE or 'q' -> Always closes the modal!
+      if (key.name === 'escape' || ch === 'q' || ch === 'Q') {
+        closeModal();
+        return;
+      }
+
+      // TAB -> Toggles focus between environments and variables!
+      if (key.name === 'tab') {
+        if (this.activeFocusPane === 'envs') {
+          this.activeFocusPane = 'vars';
+          this.varsList.focus();
+        } else {
+          this.activeFocusPane = 'envs';
+          this.envsList.focus();
+        }
+        this.updateBorders();
+        return;
+      }
+
+      // Left arrow / 'h' -> switch to envs
+      if (key.name === 'left' || (!key.ctrl && ch === 'h')) {
         this.activeFocusPane = 'envs';
         this.envsList.focus();
+        this.updateBorders();
+        return;
       }
-      this.updateBorders();
-    });
 
-    // Hotkey [N]: New Var or New Env based on focus
-    this.modal!.key(['n', 'N'], () => {
-      if (this.activeFocusPane === 'envs') {
-        this.promptAddEnvironment();
-      } else {
-        this.promptAddVariable();
+      // Right arrow / 'l' -> switch to vars
+      if (key.name === 'right' || (!key.ctrl && ch === 'l')) {
+        this.activeFocusPane = 'vars';
+        this.varsList.focus();
+        this.updateBorders();
+        return;
       }
-    });
 
-    // Hotkey [D]: Delete Variable
-    this.modal!.key(['d', 'D'], () => {
-      if (this.activeFocusPane === 'vars') {
-        this.deleteCurrentVariable();
+      // 'A' -> Activate current environment
+      if (ch === 'a' || ch === 'A') {
+        this.activateSelectedEnv();
+        return;
       }
-    });
 
-    // Hotkey [S]: Save current environment to file
-    this.modal!.key(['s', 'S'], () => {
-      this.saveCurrentEnvironment();
-    });
+      // 'E' -> Edit variable (when in vars pane)
+      if ((ch === 'e' || ch === 'E') && this.activeFocusPane === 'vars') {
+        this.promptEditVariable(this.selectedVarIndex);
+        return;
+      }
+
+      // 'N' -> New variable or New env
+      if (ch === 'n' || ch === 'N') {
+        if (this.activeFocusPane === 'envs') {
+          this.promptAddEnvironment();
+        } else {
+          this.promptAddVariable();
+        }
+        return;
+      }
+
+      // 'D' -> Delete variable
+      if (ch === 'd' || ch === 'D' || key.name === 'delete') {
+        if (this.activeFocusPane === 'vars') {
+          this.deleteCurrentVariable();
+        }
+        return;
+      }
+
+      // 'S' -> Save to file
+      if (ch === 's' || ch === 'S') {
+        this.saveCurrentEnvironment();
+        return;
+      }
+    };
+
+    this.screen.on('keypress', this.keypressHandler);
   }
 
   private promptAddEnvironment() {
@@ -386,8 +471,10 @@ export class EnvironmentManagerModal {
       }
     });
 
+    this.isPromptOpen = true;
     promptBox.setFront();
     promptBox.input('Enter new environment name (e.g. UAT, Staging):', '', (err, envName) => {
+      this.isPromptOpen = false;
       promptBox.destroy();
       this.envsList.focus();
       if (!err && envName && envName.trim()) {
@@ -413,6 +500,11 @@ export class EnvironmentManagerModal {
     if (!env) return;
 
     const entries = Object.entries(env.variables);
+    if (entries.length === 0) {
+      this.promptAddVariable();
+      return;
+    }
+
     const target = entries[varIndex];
     if (!target) return;
 
@@ -423,7 +515,7 @@ export class EnvironmentManagerModal {
       parent: this.screen,
       top: 'center',
       left: 'center',
-      width: '60%',
+      width: '65%',
       height: 'shrink',
       border: { type: 'line' },
       tags: true,
@@ -436,8 +528,10 @@ export class EnvironmentManagerModal {
       }
     });
 
+    this.isPromptOpen = true;
     promptBox.setFront();
     promptBox.input(`Edit value for "${varName}":`, currentValue || '', (err, value) => {
+      this.isPromptOpen = false;
       promptBox.destroy();
       this.varsList.focus();
       if (!err && value !== null && value !== undefined) {
@@ -475,6 +569,7 @@ export class EnvironmentManagerModal {
       }
     });
 
+    this.isPromptOpen = true;
     namePrompt.setFront();
     namePrompt.input(`[${env.name}] Enter variable name (e.g. API_HOST):`, '', (err, varName) => {
       namePrompt.destroy();
@@ -499,6 +594,7 @@ export class EnvironmentManagerModal {
 
         valPrompt.setFront();
         valPrompt.input(`Enter value for "${cleanName}":`, '', (vErr, varValue) => {
+          this.isPromptOpen = false;
           valPrompt.destroy();
           this.varsList.focus();
           if (!vErr && varValue !== null && varValue !== undefined) {
@@ -513,6 +609,7 @@ export class EnvironmentManagerModal {
           this.screen.render();
         });
       } else {
+        this.isPromptOpen = false;
         this.varsList.focus();
         this.screen.render();
       }

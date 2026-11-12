@@ -77,16 +77,7 @@ export class BruiApp {
     this.selectedRequest = firstReq;
 
     if (this.screen) {
-      this.envManagerModal = new EnvironmentManagerModal(
-        this.screen,
-        this.collection,
-        this.themeManager,
-        () => {
-          this.updateHeader();
-          this.updateRequestView();
-          this.updateResponseView();
-        }
-      );
+      this.envManagerModal = undefined;
     }
   }
 
@@ -622,27 +613,36 @@ export class BruiApp {
     });
 
     // 6. Global Hotkeys
-    this.screen.key(['q', 'C-c'], () => {
+    this.screen.key(['C-c'], () => {
+      return process.exit(0);
+    });
+
+    this.screen.key(['q'], () => {
+      if (this.isModalOpen()) return;
       return process.exit(0);
     });
 
     // Space key: Send request
     this.screen.key(['space'], async () => {
+      if (this.isModalOpen()) return;
       await this.sendActiveRequest();
     });
 
     // Open Collection Picker
     this.screen.key(['c', 'C'], () => {
+      if (this.isModalOpen()) return;
       this.openCollectionModal();
     });
 
     // OAuth2 Trigger
     this.screen.key(['o', 'O'], async () => {
+      if (this.isModalOpen()) return;
       await this.triggerOAuth2();
     });
 
     // Cycle Theme
     this.screen.key(['t', 'T'], () => {
+      if (this.isModalOpen()) return;
       const newTheme = this.themeManager.cycle();
       this.applyTheme();
       this.renderSidebar();
@@ -653,20 +653,22 @@ export class BruiApp {
 
     // Environment Modal
     this.screen.key(['e', 'E'], () => {
+      if (this.isModalOpen()) return;
       this.openEnvironmentModal();
     });
 
     // Number keys for request tabs
-    this.screen.key(['1'], () => { this.activeRequestTab = 'headers'; this.updateRequestView(); });
-    this.screen.key(['2'], () => { this.activeRequestTab = 'params'; this.updateRequestView(); });
-    this.screen.key(['3'], () => { this.activeRequestTab = 'body'; this.updateRequestView(); });
-    this.screen.key(['4'], () => { this.activeRequestTab = 'auth'; this.updateRequestView(); });
-    this.screen.key(['5'], () => { this.activeRequestTab = 'pre-script'; this.updateRequestView(); });
-    this.screen.key(['6'], () => { this.activeRequestTab = 'post-script'; this.updateRequestView(); });
-    this.screen.key(['7'], () => { this.activeRequestTab = 'docs'; this.updateRequestView(); });
+    this.screen.key(['1'], () => { if (!this.isModalOpen()) { this.activeRequestTab = 'headers'; this.updateRequestView(); } });
+    this.screen.key(['2'], () => { if (!this.isModalOpen()) { this.activeRequestTab = 'params'; this.updateRequestView(); } });
+    this.screen.key(['3'], () => { if (!this.isModalOpen()) { this.activeRequestTab = 'body'; this.updateRequestView(); } });
+    this.screen.key(['4'], () => { if (!this.isModalOpen()) { this.activeRequestTab = 'auth'; this.updateRequestView(); } });
+    this.screen.key(['5'], () => { if (!this.isModalOpen()) { this.activeRequestTab = 'pre-script'; this.updateRequestView(); } });
+    this.screen.key(['6'], () => { if (!this.isModalOpen()) { this.activeRequestTab = 'post-script'; this.updateRequestView(); } });
+    this.screen.key(['7'], () => { if (!this.isModalOpen()) { this.activeRequestTab = 'docs'; this.updateRequestView(); } });
 
     // Tab key switches focus
     this.screen.key(['tab'], () => {
+      if (this.isModalOpen()) return;
       if (this.screen.focused === this.sidebarList) {
         this.responseContentBox.focus();
       } else if (this.screen.focused === this.responseContentBox) {
@@ -699,8 +701,12 @@ export class BruiApp {
     }
   }
 
+  public isModalOpen(): boolean {
+    return !!this.collectionModal || (!!this.envManagerModal && this.envManagerModal.isOpen());
+  }
+
   private openCollectionModal() {
-    if (this.collectionModal) return;
+    if (this.isModalOpen()) return;
 
     const t = this.getTheme();
     const discovered = CollectionParser.discoverCollections(this.collectionPath);
@@ -709,7 +715,7 @@ export class BruiApp {
       parent: this.screen,
       top: 'center',
       left: 'center',
-      width: '60%',
+      width: '65%',
       height: '60%',
       border: { type: 'line' },
       style: {
@@ -721,14 +727,29 @@ export class BruiApp {
       mouse: true
     });
 
-    const titleBox = blessed.box({
+    blessed.box({
       parent: this.collectionModal,
       top: 0,
       left: 1,
-      right: 1,
+      right: 12,
       height: 2,
-      content: `{bold}{${t.accent}-fg}📂 Select a Bruno Collection{/} {${t.subtext}-fg}(click or press Enter, Esc to cancel){/}`,
+      content: `{bold}{${t.accent}-fg}📂 Select a Bruno Collection{/} {${t.subtext}-fg}(Enter/Click to open, Esc/q to cancel){/}`,
       tags: true
+    });
+
+    const closeBtn = blessed.box({
+      parent: this.collectionModal,
+      top: 0,
+      right: 1,
+      width: 11,
+      height: 1,
+      content: `{bold}{${t.delete}-fg}[ ✕ Close ]{/}`,
+      tags: true,
+      mouse: true,
+      style: {
+        bg: t.surface,
+        hover: { bg: t.surfaceHover }
+      }
     });
 
     const collList = blessed.list({
@@ -754,7 +775,13 @@ export class BruiApp {
       })
     });
 
+    let collKeyHandler: ((ch: any, key: any) => void) | undefined;
+
     const closeModal = () => {
+      if (collKeyHandler) {
+        this.screen.removeListener('keypress', collKeyHandler);
+        collKeyHandler = undefined;
+      }
       if (this.collectionModal) {
         this.collectionModal.destroy();
         this.collectionModal = undefined;
@@ -762,6 +789,10 @@ export class BruiApp {
         this.screen.render();
       }
     };
+
+    closeBtn.on('click', () => {
+      closeModal();
+    });
 
     collList.on('select', (_item: any, index: number) => {
       const selected = discovered[index];
@@ -776,9 +807,15 @@ export class BruiApp {
       closeModal();
     });
 
-    this.screen.onceKey('escape', () => {
-      closeModal();
-    });
+    collKeyHandler = (ch: any, key: any) => {
+      if (!this.collectionModal) return;
+      if (!key) return;
+      if (key.name === 'escape' || ch === 'q' || ch === 'Q') {
+        closeModal();
+      }
+    };
+
+    this.screen.on('keypress', collKeyHandler);
 
     collList.focus();
     this.screen.render();
@@ -794,6 +831,10 @@ export class BruiApp {
           this.updateHeader();
           this.updateRequestView();
           this.updateResponseView();
+        },
+        () => {
+          this.sidebarList.focus();
+          this.screen.render();
         }
       );
     }

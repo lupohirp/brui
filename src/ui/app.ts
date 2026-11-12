@@ -43,6 +43,12 @@ export class BruiApp {
   private inlineText: string = '';
   private inlineCursor: number = 0;
 
+  // Autocomplete state for {{ variables }}
+  private acCandidates: Array<{ name: string; type: 'env' | 'dynamic' | 'runtime' | 'system'; val?: string }> = [];
+  private acSelectedIndex: number = 0;
+  private acMatchPrefix: string = '';
+  private acMatchStart: number = 0;
+
   // UI Widgets
   private screen!: blessed.Widgets.Screen;
   private headerBox!: blessed.Widgets.BoxElement;
@@ -471,7 +477,7 @@ export class BruiApp {
       : '';
 
     // Highlight {{VAR_1}} in theme's accent color (Catppuccin Mauve/Violet #cba6f7)
-    const escapeTags = (s: string) => s.replace(/\{/g, '{open}').replace(/\}/g, '{close}');
+    const escapeTags = (s: string) => blessed.escape(s);
 
     const renderSingleLineWithCursor = (raw: string, isEditing: boolean, cur: number): string => {
       if (!isEditing) {
@@ -595,14 +601,16 @@ export class BruiApp {
         ? this.inlineText
         : (this.collection.collectionHeaders || []).filter(h => h.enabled !== false).map(h => `${h.name}: ${h.value}`).join('\n');
 
-      content += `\n\n {bold}{${t.accent}-fg}--- Inherited from collection.bru (${collHeaders.length}) ---{/} {${t.subtext}-fg}[Click here to edit collection headers]{/}\n`;
-      content += renderInlineBlock(
-        rawCollHeaders,
-        isEditingCollHeaders,
-        isEditingCollHeaders ? this.inlineCursor : 0,
-        'Header-Name: value',
-        true
-      );
+      if (collHeaders.length > 0 || isEditingCollHeaders) {
+        content += `\n\n {bold}{${t.accent}-fg}--- Inherited Headers (${collHeaders.length}) ---{/} {${t.subtext}-fg}[collection.bru - Click to edit]{/}\n`;
+        content += renderInlineBlock(
+          rawCollHeaders,
+          isEditingCollHeaders,
+          isEditingCollHeaders ? this.inlineCursor : 0,
+          'Header-Name: value',
+          true
+        );
+      }
     } else if (this.activeRequestTab === 'params') {
       const rawParams = isEditingContent
         ? this.inlineText
@@ -693,7 +701,7 @@ export class BruiApp {
 
       if (mode === 'inherit') {
         const collMode = this.collection.collectionAuthType || 'none';
-        content += ` {bold}{${t.accent}-fg}Mode:{/} Inherited from collection.bru ({bold}${collMode.toUpperCase()}{/})\n`;
+        content += ` {bold}{${t.accent}-fg}Mode:{/} Inherited ({bold}${collMode.toUpperCase()}{/})\n`;
         if (collMode === 'bearer') {
           const rawTok = this.collection.collectionAuthBearerToken || '{{access_token}}';
           const resTok = Interpolator.interpolate(rawTok, this.collection);
@@ -844,6 +852,23 @@ export class BruiApp {
 
   private updateStatusBar(msg: string) {
     const t = this.getTheme();
+
+    if (this.acCandidates.length > 0) {
+      const candidatesStr = this.acCandidates.map((cand, idx) => {
+        const isSelected = idx === this.acSelectedIndex;
+        const color = cand.type === 'dynamic' ? t.put : cand.type === 'env' ? t.accent : t.subtext;
+        const styleStart = isSelected ? `{bold}{${t.selectionFg}-fg}{${t.selection}-bg}` : `{${t.fg}-fg}`;
+        const styleEnd = `{/}`;
+        return `${styleStart} {{${cand.name}}} {${color}-fg}(${cand.type}){/}${styleStart} ${styleEnd}`;
+      }).join(' ');
+
+      this.statusBar.setContent(
+        ` {bold}{${t.options}-fg}[Autocomplete]{/} ${candidatesStr}  │ {${t.subtext}-fg}[Tab/Enter] Accept  [Left/Right] Select  [Esc] Cancel{/}`
+      );
+      this.screen.render();
+      return;
+    }
+
     const shortcuts =
       `{bold}[Space]{/} Send  {bold}[Click/U]{/} URL  {bold}[Click/I]{/} Edit Tab  ` +
       `{bold}[S]{/} Save  {bold}[R]{/} Revert  {bold}[E]{/} Env  {bold}[C]{/} Coll  {bold}[1-7]{/} Tabs  {bold}[q]{/} Quit`;
@@ -852,6 +877,113 @@ export class BruiApp {
       ` ${shortcuts}   │   {bold}{${t.accent}-fg}${msg}{/}`
     );
     this.screen.render();
+  }
+
+  private getAutocompleteVariables(): Array<{ name: string; type: 'env' | 'dynamic' | 'runtime' | 'system'; val?: string }> {
+    const list: Array<{ name: string; type: 'env' | 'dynamic' | 'runtime' | 'system'; val?: string }> = [];
+    const seen = new Set<string>();
+
+    // 1. Dynamic variables (Bruno built-in)
+    const dynamics = ['$uuid', '$guid', 'guid', 'uuid', '$timestamp', 'timestamp', '$isoTimestamp', '$randomInt'];
+    for (const d of dynamics) {
+      list.push({ name: d, type: 'dynamic', val: '<dynamic>' });
+      seen.add(d);
+    }
+
+    // 2. Environment variables from active environment
+    if (this.collection.activeEnvironment) {
+      const env = this.collection.environments.find(e => e.name === this.collection.activeEnvironment);
+      if (env) {
+        for (const [k, v] of Object.entries(env.variables)) {
+          if (!seen.has(k)) {
+            list.push({ name: k, type: 'env', val: String(v) });
+            seen.add(k);
+          }
+        }
+      }
+    }
+
+    // 3. Runtime variables
+    for (const [k, v] of Object.entries(this.collection.runtimeVariables || {})) {
+      if (!seen.has(k)) {
+        list.push({ name: k, type: 'runtime', val: String(v) });
+        seen.add(k);
+      }
+    }
+
+    // 4. Other environments variables as reference
+    for (const env of this.collection.environments) {
+      for (const [k, v] of Object.entries(env.variables)) {
+        if (!seen.has(k)) {
+          list.push({ name: k, type: 'env', val: String(v) });
+          seen.add(k);
+        }
+      }
+    }
+
+    return list;
+  }
+
+  private updateAutocompleteCandidates() {
+    if (this.inlineTarget === 'none') {
+      this.acCandidates = [];
+      this.acSelectedIndex = 0;
+      return;
+    }
+
+    const beforeCursor = this.inlineText.slice(0, this.inlineCursor);
+    const match = beforeCursor.match(/\{\{([a-zA-Z0-9_$-]*)$/);
+
+    if (!match) {
+      this.acCandidates = [];
+      this.acSelectedIndex = 0;
+      return;
+    }
+
+    this.acMatchPrefix = match[1];
+    this.acMatchStart = this.inlineCursor - this.acMatchPrefix.length;
+    const allVars = this.getAutocompleteVariables();
+    const prefixLower = this.acMatchPrefix.toLowerCase();
+
+    const filtered = allVars.filter(v =>
+      v.name.toLowerCase().includes(prefixLower)
+    ).slice(0, 8);
+
+    this.acCandidates = filtered;
+    if (this.acSelectedIndex >= this.acCandidates.length) {
+      this.acSelectedIndex = Math.max(0, this.acCandidates.length - 1);
+    }
+  }
+
+  private acceptAutocomplete() {
+    if (this.acCandidates.length === 0 || !this.selectedRequest) return;
+    const selected = this.acCandidates[this.acSelectedIndex];
+    if (!selected) return;
+
+    const startIdx = this.acMatchStart;
+    const endIdx = this.inlineCursor;
+    const afterCursor = this.inlineText.slice(endIdx);
+    const hasClosing = afterCursor.startsWith('}}');
+    const insertion = hasClosing ? selected.name : `${selected.name}}}`;
+
+    this.inlineText = this.inlineText.slice(0, startIdx) + insertion + afterCursor;
+    this.inlineCursor = startIdx + insertion.length;
+
+    const req = this.selectedRequest;
+    if (this.inlineTarget === 'url') {
+      req.url = this.inlineText;
+      this.modifiedRequests.add(req.id);
+      this.renderSidebar();
+    } else if (this.inlineTarget === 'coll-headers') {
+      this.applyCollectionHeadersText(this.inlineText);
+    } else {
+      this.applyTabEditableText(req, this.inlineText);
+    }
+
+    this.acCandidates = [];
+    this.acSelectedIndex = 0;
+    this.updateRequestView();
+    this.updateStatusBar(`Inserted {{${selected.name}}}`);
   }
 
   private markRequestModified(req: BrunoRequest) {
@@ -998,6 +1130,7 @@ export class BruiApp {
     this.requestPane.style.border.fg = t.borderFocus;
     this.sidebarList.style.border.fg = t.border;
     this.updateRequestView();
+    this.updateAutocompleteCandidates();
     const targetLabel = target === 'url' ? 'URL' : target === 'coll-headers' ? 'collection.bru Headers' : this.activeRequestTab;
     this.updateStatusBar(`Editing ${targetLabel} inline — Type directly | [Ctrl+S] Save | [Esc] Done`);
   }
@@ -1006,6 +1139,8 @@ export class BruiApp {
     if (this.inlineTarget === 'none') return;
     const t = this.getTheme();
     this.inlineTarget = 'none';
+    this.acCandidates = [];
+    this.acSelectedIndex = 0;
     this.requestPane.style.border.fg = t.border;
     this.sidebarList.style.border.fg = t.borderFocus;
     this.sidebarList.focus();
@@ -1147,8 +1282,21 @@ export class BruiApp {
       const kName = key?.name || '';
 
       if (kName === 'escape') {
+        if (this.acCandidates.length > 0) {
+          this.acCandidates = [];
+          this.acSelectedIndex = 0;
+          this.updateStatusBar(`Editing ${this.inlineTarget === 'url' ? 'URL' : this.inlineTarget === 'coll-headers' ? 'collection.bru Headers' : this.activeRequestTab} inline`);
+          return;
+        }
         this.deactivateInlineEdit();
         return;
+      }
+
+      if (kName === 'tab') {
+        if (this.acCandidates.length > 0) {
+          this.acceptAutocomplete();
+          return;
+        }
       }
 
       if ((key?.ctrl && kName === 's') || kName === 'f2') {
@@ -1168,6 +1316,10 @@ export class BruiApp {
       const isSingleLine = this.inlineTarget === 'url';
 
       if (kName === 'enter') {
+        if (this.acCandidates.length > 0) {
+          this.acceptAutocomplete();
+          return;
+        }
         if (isSingleLine) {
           this.deactivateInlineEdit();
         } else {
@@ -1178,7 +1330,9 @@ export class BruiApp {
           } else {
             this.applyTabEditableText(req, this.inlineText);
           }
+          this.updateAutocompleteCandidates();
           this.updateRequestView();
+          this.updateStatusBar(`Editing ${this.inlineTarget === 'url' ? 'URL' : this.inlineTarget === 'coll-headers' ? 'collection.bru Headers' : this.activeRequestTab} inline`);
         }
         return;
       }
@@ -1196,7 +1350,9 @@ export class BruiApp {
           } else {
             this.applyTabEditableText(req, this.inlineText);
           }
+          this.updateAutocompleteCandidates();
           this.updateRequestView();
+          this.updateStatusBar(`Editing ${this.inlineTarget === 'url' ? 'URL' : this.inlineTarget === 'coll-headers' ? 'collection.bru Headers' : this.activeRequestTab} inline`);
         }
         return;
       }
@@ -1213,23 +1369,39 @@ export class BruiApp {
           } else {
             this.applyTabEditableText(req, this.inlineText);
           }
+          this.updateAutocompleteCandidates();
           this.updateRequestView();
+          this.updateStatusBar(`Editing ${this.inlineTarget === 'url' ? 'URL' : this.inlineTarget === 'coll-headers' ? 'collection.bru Headers' : this.activeRequestTab} inline`);
         }
         return;
       }
 
       if (kName === 'left') {
+        if (this.acCandidates.length > 0) {
+          this.acSelectedIndex = (this.acSelectedIndex - 1 + this.acCandidates.length) % this.acCandidates.length;
+          this.updateStatusBar('');
+          return;
+        }
         if (this.inlineCursor > 0) {
           this.inlineCursor -= 1;
+          this.updateAutocompleteCandidates();
           this.updateRequestView();
+          this.updateStatusBar(`Editing ${this.inlineTarget === 'url' ? 'URL' : this.inlineTarget === 'coll-headers' ? 'collection.bru Headers' : this.activeRequestTab} inline`);
         }
         return;
       }
 
       if (kName === 'right') {
+        if (this.acCandidates.length > 0) {
+          this.acSelectedIndex = (this.acSelectedIndex + 1) % this.acCandidates.length;
+          this.updateStatusBar('');
+          return;
+        }
         if (this.inlineCursor < this.inlineText.length) {
           this.inlineCursor += 1;
+          this.updateAutocompleteCandidates();
           this.updateRequestView();
+          this.updateStatusBar(`Editing ${this.inlineTarget === 'url' ? 'URL' : this.inlineTarget === 'coll-headers' ? 'collection.bru Headers' : this.activeRequestTab} inline`);
         }
         return;
       }
@@ -1237,14 +1409,18 @@ export class BruiApp {
       if (kName === 'home' || (key?.ctrl && kName === 'a')) {
         const lineStart = this.inlineText.lastIndexOf('\n', this.inlineCursor - 1) + 1;
         this.inlineCursor = lineStart;
+        this.updateAutocompleteCandidates();
         this.updateRequestView();
+        this.updateStatusBar(`Editing ${this.inlineTarget === 'url' ? 'URL' : this.inlineTarget === 'coll-headers' ? 'collection.bru Headers' : this.activeRequestTab} inline`);
         return;
       }
 
       if (kName === 'end' || (key?.ctrl && kName === 'e')) {
         const nextNl = this.inlineText.indexOf('\n', this.inlineCursor);
         this.inlineCursor = nextNl === -1 ? this.inlineText.length : nextNl;
+        this.updateAutocompleteCandidates();
         this.updateRequestView();
+        this.updateStatusBar(`Editing ${this.inlineTarget === 'url' ? 'URL' : this.inlineTarget === 'coll-headers' ? 'collection.bru Headers' : this.activeRequestTab} inline`);
         return;
       }
 
@@ -1268,7 +1444,9 @@ export class BruiApp {
           newCursor += lines[i].length + 1;
         }
         this.inlineCursor = newCursor + targetCol;
+        this.updateAutocompleteCandidates();
         this.updateRequestView();
+        this.updateStatusBar(`Editing ${this.inlineTarget === 'url' ? 'URL' : this.inlineTarget === 'coll-headers' ? 'collection.bru Headers' : this.activeRequestTab} inline`);
         return;
       }
 
@@ -1284,7 +1462,9 @@ export class BruiApp {
         } else {
           this.applyTabEditableText(req, this.inlineText);
         }
+        this.updateAutocompleteCandidates();
         this.updateRequestView();
+        this.updateStatusBar(`Editing ${this.inlineTarget === 'url' ? 'URL' : this.inlineTarget === 'coll-headers' ? 'collection.bru Headers' : this.activeRequestTab} inline`);
       }
     });
 
@@ -1631,7 +1811,7 @@ export class BruiApp {
     let cursor = text.length;
     let editorKeyHandler: ((ch: any, key: any) => void) | undefined;
 
-    const escapeTags = (s: string) => s.replace(/\{/g, '{open}').replace(/\}/g, '{close}');
+    const escapeTags = (s: string) => blessed.escape(s);
 
     const renderLineWithCursor = (line: string, col: number | null): string => {
       if (col === null) {

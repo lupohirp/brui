@@ -12,6 +12,8 @@ import (
 
 type Config struct {
 	Theme string `json:"theme,omitempty"`
+	// Insecure disables TLS certificate verification (same as --insecure).
+	Insecure bool `json:"insecure,omitempty"`
 }
 
 // Path returns the location of the config file. BRUI_CONFIG overrides it.

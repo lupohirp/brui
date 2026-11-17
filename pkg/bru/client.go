@@ -3,6 +3,8 @@ package bru
 import (
 	"crypto/tls"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/url"
@@ -10,11 +12,23 @@ import (
 	"time"
 )
 
-var httpClient = &http.Client{
-	Timeout: 30 * time.Second,
-	Transport: &http.Transport{
-		TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
-	},
+var httpClient = newHTTPClient(false)
+
+// newHTTPClient builds the client used for all requests. It starts from Go's
+// default transport so HTTP(S)_PROXY / NO_PROXY, HTTP/2 and sane dial/TLS
+// timeouts are honoured. Certificate verification is on unless insecure.
+func newHTTPClient(insecure bool) *http.Client {
+	t := http.DefaultTransport.(*http.Transport).Clone()
+	if insecure {
+		t.TLSClientConfig = &tls.Config{InsecureSkipVerify: true}
+	}
+	return &http.Client{Timeout: 30 * time.Second, Transport: t}
+}
+
+// SetInsecureSkipVerify disables (or re-enables) TLS certificate verification.
+// It must be called at startup, before any request is sent.
+func SetInsecureSkipVerify(insecure bool) {
+	httpClient = newHTTPClient(insecure)
 }
 
 func ExecuteRequest(req *BrunoRequest, coll *BrunoCollection) (*HTTPResponse, error) {
@@ -101,6 +115,10 @@ func ExecuteRequest(req *BrunoRequest, coll *BrunoCollection) (*HTTPResponse, er
 	resp, err := httpClient.Do(httpReq)
 	duration := time.Since(start).Milliseconds()
 	if err != nil {
+		var certErr *tls.CertificateVerificationError
+		if errors.As(err, &certErr) {
+			return nil, fmt.Errorf("%w (TLS verification failed: trust the CA via SSL_CERT_FILE, or run brui --insecure to skip verification)", err)
+		}
 		return nil, err
 	}
 	defer resp.Body.Close()

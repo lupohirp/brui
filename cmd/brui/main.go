@@ -1,9 +1,11 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -13,15 +15,67 @@ import (
 	"github.com/muesli/termenv"
 )
 
+const usage = `Usage: brui [flags] [collection-dir]
+
+Open a Bruno collection (defaults to the current directory).
+
+Flags:
+  -k, --insecure   skip TLS certificate verification (or "insecure": true in config)
+  -h, --help       show this help
+
+Environment:
+  HTTPS_PROXY, HTTP_PROXY, NO_PROXY   proxy settings for outgoing requests
+  SSL_CERT_FILE                       extra CA bundle to trust
+  BRUI_COLOR=256|16                   force a reduced color palette
+  BRUI_CONFIG                         config file path (default ~/.config/brui/config.json)
+`
+
+type options struct {
+	path     string
+	insecure bool
+}
+
+// parseArgs accepts flags before or after the collection path.
+func parseArgs(args []string) (options, error) {
+	opts := options{path: "."}
+	pathSet := false
+	for _, a := range args {
+		switch {
+		case a == "-k" || a == "--insecure":
+			opts.insecure = true
+		case a == "-h" || a == "--help":
+			return opts, errHelp
+		case strings.HasPrefix(a, "-") && a != "-":
+			return opts, fmt.Errorf("unknown flag: %s", a)
+		case pathSet:
+			return opts, fmt.Errorf("unexpected argument: %s", a)
+		default:
+			opts.path, pathSet = a, true
+		}
+	}
+	return opts, nil
+}
+
+var errHelp = errors.New("help requested")
+
 func main() {
-	targetPath := "."
-	if len(os.Args) > 1 {
-		targetPath = os.Args[1]
+	opts, err := parseArgs(os.Args[1:])
+	if errors.Is(err, errHelp) {
+		fmt.Print(usage)
+		return
+	}
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n\n%s", err, usage)
+		os.Exit(2)
 	}
 
-	absPath, err := filepath.Abs(targetPath)
+	absPath, err := filepath.Abs(opts.path)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error resolving path: %v\n", err)
+		os.Exit(1)
+	}
+	if info, err := os.Stat(absPath); err != nil || !info.IsDir() {
+		fmt.Fprintf(os.Stderr, "Error: %s is not a directory\n", absPath)
 		os.Exit(1)
 	}
 
@@ -44,6 +98,11 @@ func main() {
 	m.OnThemeChange = func(name string) error {
 		cfg.Theme = name
 		return config.Save(cfg)
+	}
+
+	if opts.insecure || cfg.Insecure {
+		bru.SetInsecureSkipVerify(true)
+		m.StatusMsg = "Ready - WARNING: TLS certificate verification is disabled"
 	}
 
 	// Force 24-bit truecolor so Catppuccin hex palettes are rendered exactly.

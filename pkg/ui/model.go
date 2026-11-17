@@ -273,7 +273,9 @@ func (m *Model) sendCurrentRequest() tea.Cmd {
 	}
 	m.commitPendingEdits()
 
-	req := m.SelectedRequest
+	// Scripts run on a copy: req.setHeader/setUrl/... must affect only this
+	// execution, never the request in the editor (which may be saved to disk).
+	req := m.SelectedRequest.Clone()
 	coll := m.Coll
 	_ = m.ScriptRunner.RunPreRequest(req)
 	m.IsSending = true
@@ -289,6 +291,7 @@ func (m *Model) commitPendingEdits() {
 	if m.IsEditingURL {
 		if m.SelectedRequest != nil && m.SelectedRequest.URL != m.URLEditText {
 			m.SelectedRequest.URL = m.URLEditText
+			bru.SyncParamsFromURL(m.SelectedRequest)
 			m.ModifiedRequests[m.SelectedRequest.ID] = true
 		}
 		m.IsEditingURL = false
@@ -591,6 +594,7 @@ func (m *Model) handleURLEditKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if m.SelectedRequest != nil {
 			if m.SelectedRequest.URL != m.URLEditText {
 				m.SelectedRequest.URL = m.URLEditText
+				bru.SyncParamsFromURL(m.SelectedRequest)
 				m.ModifiedRequests[m.SelectedRequest.ID] = true
 				m.StatusMsg = "URL updated. Press [S] to save to disk."
 			}
@@ -692,10 +696,14 @@ func (m *Model) startEditingContent() {
 	case "params":
 		var lines []string
 		for _, p := range req.Params {
+			name := p.Name
+			if p.Type == bru.ParamTypePath {
+				name = ":" + name
+			}
 			if p.Enabled {
-				lines = append(lines, fmt.Sprintf("%s = %s", p.Name, p.Value))
+				lines = append(lines, fmt.Sprintf("%s = %s", name, p.Value))
 			} else {
-				lines = append(lines, fmt.Sprintf("# %s = %s", p.Name, p.Value))
+				lines = append(lines, fmt.Sprintf("# %s = %s", name, p.Value))
 			}
 		}
 		m.ContentEditText = strings.Join(lines, "\n")
@@ -763,14 +771,21 @@ func (m *Model) saveTabContent() {
 			if idx > 0 {
 				name := strings.TrimSpace(trimmed[:idx])
 				val := strings.TrimSpace(trimmed[idx+1:])
+				typ := bru.ParamTypeQuery
+				if strings.HasPrefix(name, ":") {
+					typ = bru.ParamTypePath
+					name = strings.TrimPrefix(name, ":")
+				}
 				newParams = append(newParams, bru.BruParam{
 					Name:    name,
 					Value:   val,
 					Enabled: enabled,
+					Type:    typ,
 				})
 			}
 		}
 		req.Params = newParams
+		bru.SyncURLFromParams(req)
 		m.ModifiedRequests[req.ID] = true
 
 	case "body":
@@ -2143,10 +2158,18 @@ func (m Model) renderRequestPane(width, height int) string {
 		}
 	case "params":
 		for _, p := range req.Params {
-			contentLines = append(contentLines, fmt.Sprintf(" %s = %s", lipgloss.NewStyle().Bold(true).Render(p.Name), p.Value))
+			name := p.Name
+			if p.Type == bru.ParamTypePath {
+				name = ":" + name
+			}
+			line := fmt.Sprintf(" %s = %s", lipgloss.NewStyle().Bold(true).Render(name), p.Value)
+			if !p.Enabled {
+				line = " # " + strings.TrimPrefix(line, " ")
+			}
+			contentLines = append(contentLines, line)
 		}
 		if len(req.Params) == 0 {
-			contentLines = append(contentLines, " (No query parameters)")
+			contentLines = append(contentLines, " (No parameters)")
 		}
 	case "body":
 		if req.BodyContent != "" {
@@ -2525,6 +2548,7 @@ func (m *Model) currentShortcuts() []shortcut {
 				Action: func(m *Model) tea.Cmd {
 					if m.SelectedRequest != nil {
 						m.SelectedRequest.URL = m.URLEditText
+						bru.SyncParamsFromURL(m.SelectedRequest)
 						m.ModifiedRequests[m.SelectedRequest.ID] = true
 						m.StatusMsg = "URL Updated (Press [S] to save)"
 					}

@@ -18,23 +18,8 @@ var httpClient = &http.Client{
 }
 
 func ExecuteRequest(req *BrunoRequest, coll *BrunoCollection) (*HTTPResponse, error) {
-	// 1. Interpolate URL + append active query params
-	finalURL := strings.TrimSpace(Interpolate(req.URL, coll))
-	var queryParts []string
-	for _, p := range req.Params {
-		if p.Enabled && p.Name != "" {
-			k := url.QueryEscape(Interpolate(p.Name, coll))
-			v := url.QueryEscape(Interpolate(p.Value, coll))
-			queryParts = append(queryParts, k+"="+v)
-		}
-	}
-	if len(queryParts) > 0 {
-		sep := "?"
-		if strings.Contains(finalURL, "?") {
-			sep = "&"
-		}
-		finalURL += sep + strings.Join(queryParts, "&")
-	}
+	// 1. Interpolate URL, substitute path params, append query params
+	finalURL := BuildURL(req, coll)
 
 	// 2. Body
 	var bodyReader io.Reader
@@ -71,16 +56,13 @@ func ExecuteRequest(req *BrunoRequest, coll *BrunoCollection) (*HTTPResponse, er
 	}
 
 	// 3. Collection Headers first, then Request Headers
-	headersMap := make(map[string]string)
 	for _, ch := range coll.CollectionHeaders {
 		if ch.Enabled && ch.Name != "" {
-			headersMap[strings.ToLower(ch.Name)] = Interpolate(ch.Value, coll)
 			httpReq.Header.Set(ch.Name, Interpolate(ch.Value, coll))
 		}
 	}
 	for _, rh := range req.Headers {
 		if rh.Enabled && rh.Name != "" {
-			headersMap[strings.ToLower(rh.Name)] = Interpolate(rh.Value, coll)
 			httpReq.Header.Set(rh.Name, Interpolate(rh.Value, coll))
 		}
 	}
@@ -149,4 +131,98 @@ func ExecuteRequest(req *BrunoRequest, coll *BrunoCollection) (*HTTPResponse, er
 		Body:       rawBody,
 		IsJSON:     isJSON,
 	}, nil
+}
+
+// BuildURL returns the final request URL: variables are interpolated, `:name`
+// path segments are replaced by enabled path params, and enabled query params
+// are appended unless the URL already carries them (Bruno keeps the query
+// string in the URL and mirrors it in `params:query`).
+func BuildURL(req *BrunoRequest, coll *BrunoCollection) string {
+	rawURL := strings.TrimSpace(req.URL)
+
+	base, query, hasQuery := strings.Cut(rawURL, "?")
+	present := map[string]bool{}
+	if hasQuery {
+		for _, part := range strings.Split(query, "&") {
+			k, _, _ := strings.Cut(part, "=")
+			present[k] = true
+		}
+	}
+
+	pathVals := map[string]string{}
+	for _, p := range req.Params {
+		if p.Enabled && p.Type == ParamTypePath && p.Name != "" {
+			pathVals[p.Name] = p.Value
+		}
+	}
+	if len(pathVals) > 0 {
+		segs := strings.Split(base, "/")
+		for i, seg := range segs {
+			if v, ok := pathVals[strings.TrimPrefix(seg, ":")]; ok && strings.HasPrefix(seg, ":") {
+				segs[i] = url.PathEscape(Interpolate(v, coll))
+			}
+		}
+		base = strings.Join(segs, "/")
+	}
+
+	finalURL := Interpolate(base, coll)
+	if hasQuery {
+		finalURL += "?" + Interpolate(query, coll)
+	}
+
+	var extra []string
+	for _, p := range req.Params {
+		if p.Enabled && p.Type != ParamTypePath && p.Name != "" && !present[p.Name] {
+			extra = append(extra, url.QueryEscape(Interpolate(p.Name, coll))+"="+url.QueryEscape(Interpolate(p.Value, coll)))
+		}
+	}
+	if len(extra) > 0 {
+		sep := "?"
+		if hasQuery {
+			sep = "&"
+		}
+		finalURL += sep + strings.Join(extra, "&")
+	}
+	return finalURL
+}
+
+// SyncParamsFromURL rebuilds the enabled query params from the URL query
+// string, as Bruno does when the URL is edited. Disabled query params and path
+// params are kept.
+func SyncParamsFromURL(req *BrunoRequest) {
+	var params []BruParam
+	for _, p := range req.Params {
+		if p.Type == ParamTypePath || !p.Enabled {
+			params = append(params, p)
+		}
+	}
+	if _, query, ok := strings.Cut(req.URL, "?"); ok && query != "" {
+		for _, part := range strings.Split(query, "&") {
+			if part == "" {
+				continue
+			}
+			k, v, _ := strings.Cut(part, "=")
+			params = append(params, BruParam{Name: k, Value: v, Enabled: true})
+		}
+	}
+	if params == nil {
+		params = []BruParam{}
+	}
+	req.Params = params
+}
+
+// SyncURLFromParams rewrites the URL query string from the enabled query
+// params, as Bruno does when the params table is edited.
+func SyncURLFromParams(req *BrunoRequest) {
+	base, _, _ := strings.Cut(req.URL, "?")
+	var parts []string
+	for _, p := range req.Params {
+		if p.Enabled && p.Type != ParamTypePath && p.Name != "" {
+			parts = append(parts, p.Name+"="+p.Value)
+		}
+	}
+	if len(parts) > 0 {
+		base += "?" + strings.Join(parts, "&")
+	}
+	req.URL = base
 }

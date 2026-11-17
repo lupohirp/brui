@@ -1,0 +1,32 @@
+headers {
+  X-Client: brui
+  ~X-Debug: 1
+}
+
+auth {
+  mode: bearer
+}
+
+auth:bearer {
+  token: {{access_token}}
+}
+
+auth:oauth2 {
+  grant_type: client_credentials
+  access_token_url: https://auth.example.com/token
+  client_id: {{client_id}}
+}
+
+vars:pre-request {
+  tenant: acme
+}
+
+script:pre-request {
+  if (!bru.getVar("token")) {
+    console.log("no token");
+  }
+}
+
+docs {
+  Collection docs.
+}

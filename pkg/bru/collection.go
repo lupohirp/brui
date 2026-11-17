@@ -2,7 +2,6 @@ package bru
 
 import (
 	"encoding/json"
-	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
@@ -17,13 +16,13 @@ func LoadCollection(rootPath string) (*BrunoCollection, error) {
 
 	collName := filepath.Base(absPath)
 	coll := &BrunoCollection{
-		Name:              collName,
-		Path:              absPath,
-		Folders:           []*BrunoFolder{},
-		Requests:          []*BrunoRequest{},
-		Environments:      []*BrunoEnvironment{},
-		RuntimeVariables:  make(map[string]any),
-		CollectionHeaders: []BruHeader{},
+		Name:               collName,
+		Path:               absPath,
+		Folders:            []*BrunoFolder{},
+		Requests:           []*BrunoRequest{},
+		Environments:       []*BrunoEnvironment{},
+		RuntimeVariables:   make(map[string]any),
+		CollectionHeaders:  []BruHeader{},
 		CollectionAuthType: "none",
 	}
 
@@ -74,8 +73,10 @@ func parseCollectionBru(filePath string, coll *BrunoCollection) {
 		return
 	}
 	blocks := ParseBruBlocks(string(data))
+	coll.collectionBlocks = blocks
+	coll.collectionTail = extraTrailingNewlines(string(data))
 	for _, b := range blocks {
-		switch b.Name {
+		switch b.key() {
 		case "meta":
 			for _, line := range b.Content {
 				k, v := parseKeyValue(line)
@@ -85,44 +86,24 @@ func parseCollectionBru(filePath string, coll *BrunoCollection) {
 			}
 		case "headers":
 			for _, line := range b.Content {
-				trimmed := strings.TrimSpace(line)
-				if trimmed == "" || strings.HasPrefix(trimmed, "//") {
-					continue
-				}
-				enabled := true
-				if strings.HasPrefix(trimmed, "~") {
-					enabled = false
-					trimmed = strings.TrimSpace(strings.TrimPrefix(trimmed, "~"))
-				}
-				colon := strings.Index(trimmed, ":")
-				if colon != -1 {
-					coll.CollectionHeaders = append(coll.CollectionHeaders, BruHeader{
-						Name:    strings.TrimSpace(trimmed[:colon]),
-						Value:   strings.TrimSpace(trimmed[colon+1:]),
-						Enabled: enabled,
-					})
+				if e, ok := parseDictLine(line); ok {
+					coll.CollectionHeaders = append(coll.CollectionHeaders, BruHeader{Name: e.Key, Value: e.Value, Enabled: e.Enabled})
 				}
 			}
 		case "auth":
-			if b.SubName == "bearer" {
-				for _, line := range b.Content {
-					k, v := parseKeyValue(line)
-					if k == "token" {
-						coll.CollectionAuthBearerToken = v
-					}
-				}
-			} else {
-				for _, line := range b.Content {
-					k, v := parseKeyValue(line)
-					if k == "mode" {
-						coll.CollectionAuthType = v
-					}
+			for _, line := range b.Content {
+				if k, v := parseKeyValue(line); k == "mode" {
+					coll.CollectionAuthType = v
 				}
 			}
-		case "script":
-			if b.SubName == "pre-request" {
-				coll.CollectionPreRequestScript = strings.Join(b.Content, "\n")
+		case "auth:bearer":
+			for _, line := range b.Content {
+				if k, v := parseKeyValue(line); k == "token" {
+					coll.CollectionAuthBearerToken = v
+				}
 			}
+		case "script:pre-request":
+			coll.CollectionPreRequestScript = dedent(b.Content)
 		}
 	}
 }
@@ -139,14 +120,16 @@ func parseEnvironmentFile(filePath, name string) *BrunoEnvironment {
 		return env
 	}
 
-	blocks := ParseBruBlocks(string(data))
-	for _, b := range blocks {
-		if b.Name == "vars" {
-			for _, line := range b.Content {
-				k, v := parseKeyValue(line)
-				if k != "" {
-					env.Variables[k] = v
-				}
+	env.rawBlocks = ParseBruBlocks(string(data))
+	env.rawTail = extraTrailingNewlines(string(data))
+	for _, b := range env.rawBlocks {
+		if b.key() != "vars" {
+			continue
+		}
+		for _, line := range b.Content {
+			// Disabled (~) variables are not active; they are kept on disk via rawBlocks.
+			if e, ok := parseDictLine(line); ok && e.Enabled && e.Key != "" {
+				env.Variables[e.Key] = e.Value
 			}
 		}
 	}
@@ -204,62 +187,85 @@ func scanFolder(folderPath, rootPath string) ([]*BrunoFolder, []*BrunoRequest) {
 	return folders, requests
 }
 
+// SerializeCollectionBru renders collection.bru, regenerating only headers,
+// auth mode, bearer token and the pre-request script; every other block
+// (meta, auth:oauth2, vars, tests, docs, ...) is written back verbatim.
 func SerializeCollectionBru(coll *BrunoCollection) string {
-	var sb strings.Builder
-
-	sb.WriteString("meta {\n")
-	sb.WriteString(fmt.Sprintf("  name: %s\n", coll.Name))
-	sb.WriteString("  type: collection\n")
-	sb.WriteString("}\n\n")
-
-	if len(coll.CollectionHeaders) > 0 {
-		sb.WriteString("headers {\n")
-		for _, h := range coll.CollectionHeaders {
-			if h.Enabled {
-				sb.WriteString(fmt.Sprintf("  %s: %s\n", h.Name, h.Value))
-			} else {
-				sb.WriteString(fmt.Sprintf("  ~%s: %s\n", h.Name, h.Value))
+	orig := func(key string) *BruBlock {
+		for i := range coll.collectionBlocks {
+			if coll.collectionBlocks[i].key() == key {
+				return &coll.collectionBlocks[i]
 			}
 		}
-		sb.WriteString("}\n\n")
+		return nil
 	}
+	m := newManagedBlocks()
 
-	if coll.CollectionAuthType != "" && coll.CollectionAuthType != "none" {
-		sb.WriteString("auth {\n")
-		sb.WriteString(fmt.Sprintf("  mode: %s\n", coll.CollectionAuthType))
-		sb.WriteString("}\n\n")
+	var headers []dictEntry
+	for _, h := range coll.CollectionHeaders {
+		headers = append(headers, dictEntry{Key: h.Name, Value: h.Value, Enabled: h.Enabled})
+	}
+	m.setDict("headers", orig("headers"), headers)
 
-		if coll.CollectionAuthType == "bearer" && coll.CollectionAuthBearerToken != "" {
-			sb.WriteString("auth:bearer {\n")
-			sb.WriteString(fmt.Sprintf("  token: %s\n", coll.CollectionAuthBearerToken))
-			sb.WriteString("}\n\n")
+	mode := coll.CollectionAuthType
+	if mode == "" {
+		mode = "none"
+	}
+	if o := orig("auth"); o != nil || mode != "none" {
+		var lines []string
+		if o != nil {
+			lines = o.Content
 		}
+		m.set("auth", &BruBlock{Header: "auth", Content: setKV(lines, "mode", mode)})
 	}
-
-	if coll.CollectionPreRequestScript != "" {
-		sb.WriteString("script:pre-request {\n")
-		sb.WriteString(coll.CollectionPreRequestScript)
-		if !strings.HasSuffix(coll.CollectionPreRequestScript, "\n") {
-			sb.WriteString("\n")
+	if coll.CollectionAuthBearerToken != "" {
+		var lines []string
+		if o := orig("auth:bearer"); o != nil {
+			lines = o.Content
 		}
-		sb.WriteString("}\n")
+		m.set("auth:bearer", &BruBlock{Header: "auth:bearer", Content: setKV(lines, "token", coll.CollectionAuthBearerToken)})
+	} else {
+		m.set("auth:bearer", nil)
 	}
+	m.setText("script:pre-request", orig("script:pre-request"), coll.CollectionPreRequestScript)
 
-	return sb.String()
+	return m.render(coll.collectionBlocks, BruBlock.key) + coll.collectionTail
 }
 
+// SerializeEnvironment renders an environment file. Existing variables keep
+// their position, disabled (~) variables and other blocks such as
+// `vars:secret [...]` are preserved, and new variables are appended sorted.
 func SerializeEnvironment(env *BrunoEnvironment) string {
-	var sb strings.Builder
-	sb.WriteString("vars {\n")
-	var keys []string
-	for k := range env.Variables {
-		keys = append(keys, k)
+	var lines []string
+	emitted := map[string]bool{}
+	for _, b := range env.rawBlocks {
+		if b.key() != "vars" {
+			continue
+		}
+		for _, line := range b.Content {
+			e, ok := parseDictLine(line)
+			if !ok || !e.Enabled || e.Key == "" {
+				lines = append(lines, line) // comments, blanks, disabled vars
+				continue
+			}
+			if v, exists := env.Variables[e.Key]; exists && !emitted[e.Key] {
+				if v == e.Value {
+					lines = append(lines, line) // unchanged: keep the exact original line
+				} else {
+					lines = append(lines, formatDictLine(e.Key, v, true))
+				}
+				emitted[e.Key] = true
+			}
+		}
+		break
 	}
-	sort.Strings(keys)
-	for _, k := range keys {
-		sb.WriteString(fmt.Sprintf("  %s: %s\n", k, env.Variables[k]))
+	for _, k := range sortedKeys(env.Variables) {
+		if !emitted[k] {
+			lines = append(lines, formatDictLine(k, env.Variables[k], true))
+		}
 	}
-	sb.WriteString("}\n")
-	return sb.String()
-}
 
+	m := newManagedBlocks()
+	m.set("vars", &BruBlock{Header: "vars", Content: lines})
+	return m.render(env.rawBlocks, BruBlock.key) + env.rawTail
+}

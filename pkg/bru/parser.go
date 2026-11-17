@@ -1,203 +1,166 @@
 package bru
 
 import (
-	"bufio"
-	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 )
 
+// BruBlock is one top-level block of a .bru file, e.g. `body:json { ... }` or
+// `vars:secret [ ... ]`. Content holds the raw lines exactly as they appear in
+// the file (indentation included) so unknown blocks can be written back
+// verbatim.
 type BruBlock struct {
 	Name    string
 	SubName string
+	Header  string // original header text without the opening bracket, e.g. "body:json"
+	Array   bool   // true for list blocks delimited by [ ]
 	Content []string
+	Before  []string // lines between the previous block and this one (blank lines, comments)
 }
 
+func (b BruBlock) key() string {
+	if b.SubName != "" {
+		return b.Name + ":" + b.SubName
+	}
+	return b.Name
+}
+
+// ParseBruBlocks splits a .bru document into its top-level blocks.
+//
+// Following the Bruno grammar, a block is closed by a `}` (or `]` for list
+// blocks) at column 0. Block contents are always indented, so braces inside
+// JSON bodies or scripts never terminate the block early.
 func ParseBruBlocks(raw string) []BruBlock {
 	var blocks []BruBlock
-	scanner := bufio.NewScanner(strings.NewReader(raw))
-	
-	var current *BruBlock
-	inBlock := false
-	braceDepth := 0
+	var cur *BruBlock
+	var gap []string
+	closer := ""
 
-	for scanner.Scan() {
-		line := scanner.Text()
-		trimmed := strings.TrimSpace(line)
-
-		if !inBlock {
-			if strings.HasSuffix(trimmed, "{") {
-				header := strings.TrimSpace(strings.TrimSuffix(trimmed, "{"))
-				parts := strings.Fields(header)
-				b := BruBlock{}
-				if len(parts) > 0 {
-					subParts := strings.SplitN(parts[0], ":", 2)
-					b.Name = subParts[0]
-					if len(subParts) > 1 {
-						b.SubName = subParts[1]
-					}
-					if len(parts) > 1 && b.SubName == "" {
-						b.SubName = parts[1]
-					}
-				}
-				current = &b
-				inBlock = true
-				braceDepth = 1
+	for _, line := range strings.Split(strings.ReplaceAll(raw, "\r\n", "\n"), "\n") {
+		if cur == nil {
+			t := strings.TrimSpace(line)
+			array := false
+			switch {
+			case strings.HasSuffix(t, "{"):
+			case strings.HasSuffix(t, "["):
+				array = true
+			default:
+				gap = append(gap, line)
+				continue
 			}
-		} else {
-			opens := strings.Count(line, "{")
-			closes := strings.Count(line, "}")
-			if trimmed == "}" && braceDepth+opens-closes <= 0 {
-				if current != nil {
-					blocks = append(blocks, *current)
-					current = nil
-				}
-				inBlock = false
-				braceDepth = 0
-			} else {
-				braceDepth += opens - closes
-				if braceDepth < 1 {
-					braceDepth = 1
-				}
-				if current != nil {
-					current.Content = append(current.Content, line)
+			header := strings.TrimSpace(t[:len(t)-1])
+			b := BruBlock{Header: header, Array: array, Before: gap}
+			gap = nil
+			if parts := strings.Fields(header); len(parts) > 0 {
+				b.Name, b.SubName, _ = strings.Cut(parts[0], ":")
+				if b.SubName == "" && len(parts) > 1 {
+					b.SubName = parts[1]
 				}
 			}
+			cur = &b
+			closer = "}"
+			if array {
+				closer = "]"
+			}
+			continue
 		}
+		if strings.TrimRight(line, " \t") == closer {
+			blocks = append(blocks, *cur)
+			cur = nil
+			continue
+		}
+		cur.Content = append(cur.Content, line)
 	}
-
+	if cur != nil { // unterminated block: keep what we have rather than dropping it
+		blocks = append(blocks, *cur)
+	}
 	return blocks
 }
 
-func ParseRequestFile(filePath, relPath string) (*BrunoRequest, error) {
-	data, err := os.ReadFile(filePath)
-	if err != nil {
-		return nil, err
+// extraTrailingNewlines returns the newlines a file has beyond the final one,
+// so saving does not change how the file ends.
+func extraTrailingNewlines(raw string) string {
+	n := len(raw) - len(strings.TrimRight(raw, "\n"))
+	if n > 1 {
+		return strings.Repeat("\n", n-1)
 	}
+	return ""
+}
 
-	raw := string(data)
-	blocks := ParseBruBlocks(raw)
-
-	filename := filepath.Base(filePath)
-	name := strings.TrimSuffix(filename, ".bru")
-
-	req := &BrunoRequest{
-		ID:           relPath,
-		Name:         name,
-		Filename:     filename,
-		FilePath:     filePath,
-		RelativePath: relPath,
-		Seq:          1,
-		Method:       MethodGet,
-		URL:          "",
-		Headers:      []BruHeader{},
-		Params:       []BruParam{},
-		BodyType:     "none",
-		BodyContent:  "",
-		AuthType:     "inherit",
+// dedent removes the 2-space block indentation Bruno adds to text blocks
+// (bodies, scripts, docs).
+func dedent(lines []string) string {
+	out := make([]string, len(lines))
+	for i, l := range lines {
+		out[i] = strings.TrimPrefix(l, "  ")
 	}
+	return strings.Join(out, "\n")
+}
 
-	for _, block := range blocks {
-		switch block.Name {
-		case "meta":
-			for _, line := range block.Content {
-				k, v := parseKeyValue(line)
-				if k == "name" && v != "" {
-					req.Name = v
-				} else if k == "seq" {
-					if s, err := strconv.Atoi(v); err == nil {
-						req.Seq = s
-					}
-				}
-			}
-
-		case "get", "post", "put", "patch", "delete", "options", "head":
-			req.Method = HttpMethod(strings.ToUpper(block.Name))
-			for _, line := range block.Content {
-				k, v := parseKeyValue(line)
-				if k == "url" {
-					req.URL = v
-				} else if k == "body" {
-					req.BodyType = v
-				} else if k == "auth" {
-					req.AuthType = v
-				}
-			}
-
-		case "headers":
-			for _, line := range block.Content {
-				trimmed := strings.TrimSpace(line)
-				if trimmed == "" || strings.HasPrefix(trimmed, "//") {
-					continue
-				}
-				colon := strings.Index(trimmed, ":")
-				if colon != -1 {
-					hName := strings.TrimSpace(trimmed[:colon])
-					hVal := strings.TrimSpace(trimmed[colon+1:])
-					req.Headers = append(req.Headers, BruHeader{
-						Name:    hName,
-						Value:   hVal,
-						Enabled: true,
-					})
-				}
-			}
-
-		case "params":
-			for _, line := range block.Content {
-				trimmed := strings.TrimSpace(line)
-				if trimmed == "" || strings.HasPrefix(trimmed, "//") {
-					continue
-				}
-				eq := strings.Index(trimmed, "=")
-				if eq != -1 {
-					pName := strings.TrimSpace(trimmed[:eq])
-					pVal := strings.TrimSpace(trimmed[eq+1:])
-					req.Params = append(req.Params, BruParam{
-						Name:    pName,
-						Value:   pVal,
-						Enabled: true,
-					})
-				}
-			}
-
-		case "body":
-			req.BodyType = block.SubName
-			req.BodyContent = strings.Join(block.Content, "\n")
-
-		case "auth":
-			if block.SubName == "bearer" {
-				for _, line := range block.Content {
-					k, v := parseKeyValue(line)
-					if k == "token" {
-						req.AuthBearerToken = v
-					}
-				}
-			} else if block.SubName == "basic" {
-				for _, line := range block.Content {
-					k, v := parseKeyValue(line)
-					if k == "username" {
-						req.AuthBasicUser = v
-					} else if k == "password" {
-						req.AuthBasicPassword = v
-					}
-				}
-			}
-
-		case "script":
-			if block.SubName == "pre-request" {
-				req.PreRequestScript = strings.Join(block.Content, "\n")
-			} else if block.SubName == "post-response" {
-				req.PostResponseScript = strings.Join(block.Content, "\n")
-			}
-
-		case "docs":
-			req.Docs = strings.Join(block.Content, "\n")
+// indent is the inverse of dedent. Empty lines stay empty.
+func indent(text string) []string {
+	text = strings.TrimSuffix(text, "\n")
+	lines := strings.Split(text, "\n")
+	for i, l := range lines {
+		if l != "" {
+			lines[i] = "  " + l
 		}
 	}
+	return lines
+}
 
-	return req, nil
+type dictEntry struct {
+	Key     string
+	Value   string
+	Enabled bool
+}
+
+// parseDictLine parses a `key: value` line of a dictionary block. A leading
+// `~` marks the entry as disabled; keys may be double-quoted.
+func parseDictLine(line string) (dictEntry, bool) {
+	t := strings.TrimSpace(line)
+	if t == "" || strings.HasPrefix(t, "//") {
+		return dictEntry{}, false
+	}
+	e := dictEntry{Enabled: true}
+	if strings.HasPrefix(t, "~") {
+		e.Enabled = false
+		t = strings.TrimSpace(t[1:])
+	}
+	if strings.HasPrefix(t, `"`) {
+		end := strings.Index(t[1:], `"`)
+		if end < 0 {
+			return dictEntry{}, false
+		}
+		e.Key = t[1 : end+1]
+		rest := strings.TrimSpace(t[end+2:])
+		if !strings.HasPrefix(rest, ":") {
+			return dictEntry{}, false
+		}
+		e.Value = strings.TrimSpace(rest[1:])
+		return e, e.Key != ""
+	}
+	k, v, ok := strings.Cut(t, ":")
+	if !ok {
+		return dictEntry{}, false
+	}
+	e.Key = strings.TrimSpace(k)
+	e.Value = strings.TrimSpace(v)
+	return e, true // Bruno accepts empty keys; callers skip them where meaningless
+}
+
+func formatDictLine(key, value string, enabled bool) string {
+	if strings.ContainsAny(key, `:"`) || strings.HasPrefix(key, "~") || strings.TrimSpace(key) != key {
+		key = strconv.Quote(key)
+	}
+	prefix := "  "
+	if !enabled {
+		prefix += "~"
+	}
+	return prefix + key + ": " + value // Bruno keeps the space even for empty values
 }
 
 func parseKeyValue(line string) (string, string) {
@@ -216,99 +179,403 @@ func parseKeyValue(line string) (string, string) {
 	return parts[0], ""
 }
 
+// setKV sets `key: value` in a key/value block, replacing the existing line in
+// place (so ordering and unrelated keys are preserved) or appending it.
+func setKV(lines []string, key, value string) []string {
+	out := append([]string(nil), lines...)
+	for i, l := range out {
+		if k, v := parseKeyValue(l); k == key {
+			if v != value { // unchanged lines are kept byte-for-byte
+				out[i] = formatDictLine(key, value, true)
+			}
+			return out
+		}
+	}
+	return append(out, formatDictLine(key, value, true))
+}
+
+func hasKey(lines []string, key string) bool {
+	for _, l := range lines {
+		if k, _ := parseKeyValue(l); k == key {
+			return true
+		}
+	}
+	return false
+}
+
+// Body modes as written in the method block (`body: formUrlEncoded`) differ
+// from the corresponding block names (`body:form-urlencoded`).
+var bodyModeToBlock = map[string]string{
+	"formUrlEncoded": "form-urlencoded",
+	"multipartForm":  "multipart-form",
+}
+
+func normalizeBodyMode(mode string) string {
+	for m, b := range bodyModeToBlock {
+		if mode == b {
+			return m
+		}
+	}
+	if mode == "" {
+		return "none"
+	}
+	return mode
+}
+
+func bodyBlockName(mode string) string {
+	if b, ok := bodyModeToBlock[mode]; ok {
+		return b
+	}
+	return mode
+}
+
+var httpMethods = map[string]bool{
+	"get": true, "post": true, "put": true, "patch": true,
+	"delete": true, "options": true, "head": true,
+}
+
+// requestBlockKey maps a block to the identity used when merging managed
+// blocks into the original file.
+func requestBlockKey(b BruBlock) string {
+	if httpMethods[b.Name] && b.SubName == "" {
+		return "http"
+	}
+	if b.Name == "query" && b.SubName == "" { // legacy name of params:query
+		return "params:query"
+	}
+	return b.key()
+}
+
+func ParseRequestFile(filePath, relPath string) (*BrunoRequest, error) {
+	data, err := os.ReadFile(filePath)
+	if err != nil {
+		return nil, err
+	}
+	filename := filepath.Base(filePath)
+	req := ParseRequest(string(data))
+	req.ID = relPath
+	req.Filename = filename
+	req.FilePath = filePath
+	req.RelativePath = relPath
+	if req.Name == "" {
+		req.Name = strings.TrimSuffix(filename, ".bru")
+	}
+	return req, nil
+}
+
+// ParseRequest parses the content of a request .bru file.
+func ParseRequest(raw string) *BrunoRequest {
+	blocks := ParseBruBlocks(raw)
+	req := &BrunoRequest{
+		Seq:       1,
+		Method:    MethodGet,
+		Headers:   []BruHeader{},
+		Params:    []BruParam{},
+		BodyType:  "none",
+		AuthType:  "inherit",
+		rawBlocks: blocks,
+		rawTail:   extraTrailingNewlines(raw),
+	}
+
+	bodies := map[string]string{}
+	var bodyOrder []string
+	bodySpecified := false
+
+	for _, block := range blocks {
+		switch requestBlockKey(block) {
+		case "meta":
+			for _, line := range block.Content {
+				k, v := parseKeyValue(line)
+				if k == "name" && v != "" {
+					req.Name = v
+				} else if k == "seq" {
+					if s, err := strconv.Atoi(v); err == nil {
+						req.Seq = s
+					}
+				}
+			}
+
+		case "http":
+			req.Method = HttpMethod(strings.ToUpper(block.Name))
+			for _, line := range block.Content {
+				k, v := parseKeyValue(line)
+				switch k {
+				case "url":
+					req.URL = v
+				case "body":
+					req.BodyType = normalizeBodyMode(v)
+					bodySpecified = true
+				case "auth":
+					req.AuthType = v
+				}
+			}
+
+		case "headers":
+			for _, line := range block.Content {
+				if e, ok := parseDictLine(line); ok {
+					req.Headers = append(req.Headers, BruHeader{Name: e.Key, Value: e.Value, Enabled: e.Enabled})
+				}
+			}
+
+		case "params:query", "params:path":
+			typ := ParamTypeQuery
+			if block.SubName == "path" {
+				typ = ParamTypePath
+			}
+			for _, line := range block.Content {
+				if e, ok := parseDictLine(line); ok {
+					req.Params = append(req.Params, BruParam{Name: e.Key, Value: e.Value, Enabled: e.Enabled, Type: typ})
+				}
+			}
+
+		case "auth:bearer":
+			for _, line := range block.Content {
+				if k, v := parseKeyValue(line); k == "token" {
+					req.AuthBearerToken = v
+				}
+			}
+
+		case "auth:basic":
+			for _, line := range block.Content {
+				switch k, v := parseKeyValue(line); k {
+				case "username":
+					req.AuthBasicUser = v
+				case "password":
+					req.AuthBasicPassword = v
+				}
+			}
+
+		case "script:pre-request":
+			req.PreRequestScript = dedent(block.Content)
+		case "script:post-response":
+			req.PostResponseScript = dedent(block.Content)
+		case "docs":
+			req.Docs = dedent(block.Content)
+
+		default:
+			if block.Name == "body" && block.SubName != "" {
+				bodies[block.SubName] = dedent(block.Content)
+				bodyOrder = append(bodyOrder, block.SubName)
+			}
+		}
+	}
+
+	if !bodySpecified && len(bodyOrder) > 0 {
+		req.BodyType = normalizeBodyMode(bodyOrder[0])
+	}
+	req.BodyContent = bodies[bodyBlockName(req.BodyType)]
+	return req
+}
+
+// SerializeRequest renders a request back to .bru. Blocks brui edits are
+// regenerated (in their original position when present); every other block
+// (tests, assert, vars, auth:oauth2, other body modes, settings, ...) is
+// written back verbatim so saving never drops data.
 func SerializeRequest(req *BrunoRequest) string {
+	bodyMode := normalizeBodyMode(req.BodyType)
+	authMode := req.AuthType
+	if authMode == "" {
+		authMode = "inherit"
+	}
+	orig := func(key string) *BruBlock {
+		for i := range req.rawBlocks {
+			if requestBlockKey(req.rawBlocks[i]) == key {
+				return &req.rawBlocks[i]
+			}
+		}
+		return nil
+	}
+	content := func(b *BruBlock) []string {
+		if b == nil {
+			return nil
+		}
+		return b.Content
+	}
+
+	m := newManagedBlocks()
+
+	// meta: update in place, keeping unknown keys (type, tags, ...)
+	meta := setKV(content(orig("meta")), "name", req.Name)
+	if !hasKey(meta, "type") {
+		meta = append(meta, formatDictLine("type", "http", true))
+	}
+	meta = setKV(meta, "seq", strconv.Itoa(req.Seq))
+	m.set("meta", &BruBlock{Header: "meta", Content: meta})
+
+	method := strings.ToLower(string(req.Method))
+	if method == "" {
+		method = "get"
+	}
+	httpLines := content(orig("http"))
+	httpLines = setKV(httpLines, "url", req.URL)
+	httpLines = setKV(httpLines, "body", bodyMode)
+	httpLines = setKV(httpLines, "auth", authMode)
+	m.set("http", &BruBlock{Header: method, Content: httpLines})
+
+	var query, path []dictEntry
+	for _, p := range req.Params {
+		e := dictEntry{Key: p.Name, Value: p.Value, Enabled: p.Enabled}
+		if p.Type == ParamTypePath {
+			path = append(path, e)
+		} else {
+			query = append(query, e)
+		}
+	}
+	m.setDict("params:query", orig("params:query"), query)
+	m.setDict("params:path", orig("params:path"), path)
+
+	var headers []dictEntry
+	for _, h := range req.Headers {
+		headers = append(headers, dictEntry{Key: h.Name, Value: h.Value, Enabled: h.Enabled})
+	}
+	m.setDict("headers", orig("headers"), headers)
+
+	if req.AuthBearerToken != "" {
+		m.set("auth:bearer", &BruBlock{Header: "auth:bearer", Content: setKV(content(orig("auth:bearer")), "token", req.AuthBearerToken)})
+	} else {
+		m.set("auth:bearer", nil)
+	}
+	if req.AuthBasicUser != "" || req.AuthBasicPassword != "" {
+		lines := setKV(content(orig("auth:basic")), "username", req.AuthBasicUser)
+		lines = setKV(lines, "password", req.AuthBasicPassword)
+		m.set("auth:basic", &BruBlock{Header: "auth:basic", Content: lines})
+	} else {
+		m.set("auth:basic", nil)
+	}
+
+	if bodyMode != "none" {
+		key := "body:" + bodyBlockName(bodyMode)
+		m.setText(key, orig(key), req.BodyContent)
+	}
+	m.setText("script:pre-request", orig("script:pre-request"), req.PreRequestScript)
+	m.setText("script:post-response", orig("script:post-response"), req.PostResponseScript)
+	m.setText("docs", orig("docs"), req.Docs)
+
+	return m.render(req.rawBlocks, requestBlockKey) + req.rawTail
+}
+
+// managedBlocks collects the blocks brui regenerates, keyed by block identity.
+// A nil entry means "remove this block if present".
+type managedBlocks struct {
+	blocks map[string]*BruBlock
+	order  []string
+}
+
+func newManagedBlocks() *managedBlocks {
+	return &managedBlocks{blocks: map[string]*BruBlock{}}
+}
+
+func (m *managedBlocks) set(key string, b *BruBlock) {
+	if _, ok := m.blocks[key]; !ok {
+		m.order = append(m.order, key)
+	}
+	m.blocks[key] = b
+}
+
+// setDict manages a dictionary block. Entries identical to one in the original
+// block reuse its exact line, so only changed entries are reformatted.
+func (m *managedBlocks) setDict(key string, orig *BruBlock, entries []dictEntry) {
+	if len(entries) == 0 {
+		m.set(key, nil)
+		return
+	}
+	origLines := map[dictEntry][]string{}
+	if orig != nil {
+		for _, l := range orig.Content {
+			if e, ok := parseDictLine(l); ok {
+				origLines[e] = append(origLines[e], l)
+			}
+		}
+	}
+	lines := make([]string, 0, len(entries))
+	for _, e := range entries {
+		if q := origLines[e]; len(q) > 0 {
+			lines = append(lines, q[0])
+			origLines[e] = q[1:]
+			continue
+		}
+		lines = append(lines, formatDictLine(e.Key, e.Value, e.Enabled))
+	}
+	m.set(key, &BruBlock{Header: key, Content: lines})
+}
+
+// setText manages a free-text block (body, script, docs). If the text is
+// unchanged the original lines are kept byte-for-byte.
+func (m *managedBlocks) setText(key string, orig *BruBlock, text string) {
+	if text == "" {
+		m.set(key, nil)
+		return
+	}
+	if orig != nil && dedent(orig.Content) == text {
+		m.set(key, orig)
+		return
+	}
+	m.set(key, &BruBlock{Header: key, Content: indent(text)})
+}
+
+// render merges managed blocks into the original block sequence: managed blocks
+// replace their original counterpart in place, unmanaged blocks are copied
+// verbatim, and new managed blocks are appended.
+func (m *managedBlocks) render(original []BruBlock, keyOf func(BruBlock) string) string {
 	var sb strings.Builder
-
-	// meta
-	sb.WriteString("meta {\n")
-	sb.WriteString(fmt.Sprintf("  name: %s\n", req.Name))
-	sb.WriteString("  type: http\n")
-	sb.WriteString(fmt.Sprintf("  seq: %d\n", req.Seq))
-	sb.WriteString("}\n\n")
-
-	// method block
-	m := strings.ToLower(string(req.Method))
-	sb.WriteString(fmt.Sprintf("%s {\n", m))
-	sb.WriteString(fmt.Sprintf("  url: %s\n", req.URL))
-	sb.WriteString(fmt.Sprintf("  body: %s\n", req.BodyType))
-	sb.WriteString(fmt.Sprintf("  auth: %s\n", req.AuthType))
-	sb.WriteString("}\n\n")
-
-	// headers
-	if len(req.Headers) > 0 {
-		sb.WriteString("headers {\n")
-		for _, h := range req.Headers {
-			if h.Enabled {
-				sb.WriteString(fmt.Sprintf("  %s: %s\n", h.Name, h.Value))
-			} else {
-				sb.WriteString(fmt.Sprintf("  ~%s: %s\n", h.Name, h.Value))
+	// emit writes a block preceded by the original separator lines; new blocks
+	// get a single blank line, like Bruno writes them.
+	emit := func(b BruBlock, before []string, isNew bool) {
+		if isNew {
+			before = nil
+			if sb.Len() > 0 {
+				before = []string{""}
 			}
 		}
-		sb.WriteString("}\n\n")
-	}
-
-	// params
-	if len(req.Params) > 0 {
-		sb.WriteString("params {\n")
-		for _, p := range req.Params {
-			if p.Enabled {
-				sb.WriteString(fmt.Sprintf("  %s: %s\n", p.Name, p.Value))
-			} else {
-				sb.WriteString(fmt.Sprintf("  ~%s: %s\n", p.Name, p.Value))
-			}
+		for _, l := range before {
+			sb.WriteString(l + "\n")
 		}
-		sb.WriteString("}\n\n")
+		sb.WriteString(renderBlock(b))
 	}
-
-	// auth details
-	if req.AuthType == "bearer" && req.AuthBearerToken != "" {
-		sb.WriteString("auth:bearer {\n")
-		sb.WriteString(fmt.Sprintf("  token: %s\n", req.AuthBearerToken))
-		sb.WriteString("}\n\n")
-	} else if req.AuthType == "basic" {
-		sb.WriteString("auth:basic {\n")
-		sb.WriteString(fmt.Sprintf("  username: %s\n", req.AuthBasicUser))
-		sb.WriteString(fmt.Sprintf("  password: %s\n", req.AuthBasicPassword))
-		sb.WriteString("}\n\n")
-	}
-
-	// body
-	if req.BodyType != "" && req.BodyType != "none" && req.BodyContent != "" {
-		sb.WriteString(fmt.Sprintf("body:%s {\n", req.BodyType))
-		sb.WriteString(req.BodyContent)
-		if !strings.HasSuffix(req.BodyContent, "\n") {
-			sb.WriteString("\n")
+	emitted := map[string]bool{}
+	for _, b := range original {
+		k := keyOf(b)
+		nb, managed := m.blocks[k]
+		if !managed {
+			emit(b, b.Before, false)
+			continue
 		}
-		sb.WriteString("}\n\n")
-	}
-
-	// scripts
-	if req.PreRequestScript != "" {
-		sb.WriteString("script:pre-request {\n")
-		sb.WriteString(req.PreRequestScript)
-		if !strings.HasSuffix(req.PreRequestScript, "\n") {
-			sb.WriteString("\n")
+		if emitted[k] {
+			continue
 		}
-		sb.WriteString("}\n\n")
-	}
-	if req.PostResponseScript != "" {
-		sb.WriteString("script:post-response {\n")
-		sb.WriteString(req.PostResponseScript)
-		if !strings.HasSuffix(req.PostResponseScript, "\n") {
-			sb.WriteString("\n")
+		emitted[k] = true
+		if nb != nil {
+			emit(*nb, b.Before, false)
 		}
-		sb.WriteString("}\n\n")
 	}
-
-	// docs
-	if req.Docs != "" {
-		sb.WriteString("docs {\n")
-		sb.WriteString(req.Docs)
-		if !strings.HasSuffix(req.Docs, "\n") {
-			sb.WriteString("\n")
+	for _, k := range m.order {
+		if !emitted[k] && m.blocks[k] != nil {
+			emit(*m.blocks[k], nil, true)
 		}
-		sb.WriteString("}\n")
 	}
-
 	return sb.String()
+}
+
+func renderBlock(b BruBlock) string {
+	open, close := "{", "}"
+	if b.Array {
+		open, close = "[", "]"
+	}
+	var sb strings.Builder
+	sb.WriteString(b.Header + " " + open + "\n")
+	for _, l := range b.Content {
+		sb.WriteString(l + "\n")
+	}
+	sb.WriteString(close + "\n")
+	return sb.String()
+}
+
+// sortedKeys returns the keys of a string map in lexical order.
+func sortedKeys(mp map[string]string) []string {
+	keys := make([]string, 0, len(mp))
+	for k := range mp {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
 }

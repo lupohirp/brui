@@ -1,14 +1,21 @@
 package bru_test
 
 import (
+	"os"
 	"runtime"
 	"testing"
 
 	"github.com/lupohirp/brui/pkg/bru"
 )
 
+// TestLoadCollectionAndMemory reports memory usage when loading a real
+// collection. Point BRUI_TEST_COLLECTION at a Bruno collection to run it.
 func TestLoadCollectionAndMemory(t *testing.T) {
-	coll, err := bru.LoadCollection("/home/pakilodi/TIM/bruno-collections/APIGEE")
+	path := os.Getenv("BRUI_TEST_COLLECTION")
+	if path == "" {
+		t.Skip("set BRUI_TEST_COLLECTION to a Bruno collection directory to run this test")
+	}
+	coll, err := bru.LoadCollection(path)
 	if err != nil {
 		t.Fatalf("failed to load collection: %v", err)
 	}

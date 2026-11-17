@@ -16,6 +16,7 @@ type ScriptRunner struct {
 	vm   *goja.Runtime
 	coll *BrunoCollection
 	logs []ConsoleLogEntry
+	cur  *BrunoRequest // request currently bound to the `req` global
 }
 
 func NewScriptRunner(coll *BrunoCollection) *ScriptRunner {
@@ -111,16 +112,11 @@ func (sr *ScriptRunner) initEnvironment() {
 	})
 	bruObj.Set("setEnvVar", func(call goja.FunctionCall) goja.Value {
 		if len(call.Arguments) >= 2 {
+			// Stored as a runtime variable (which takes precedence over the
+			// environment) instead of mutating the environment itself, so values
+			// set by scripts (e.g. tokens) are never written to disk on save.
 			k := call.Arguments[0].String()
 			v := call.Arguments[1].String()
-			if sr.coll.ActiveEnvironment != "" {
-				for _, env := range sr.coll.Environments {
-					if env.Name == sr.coll.ActiveEnvironment {
-						env.Variables[k] = v
-						break
-					}
-				}
-			}
 			sr.coll.RuntimeVariables[k] = v
 		}
 		return goja.Undefined()
@@ -153,6 +149,18 @@ func (sr *ScriptRunner) initEnvironment() {
 			sr.log("error", fmt.Sprintf("[bru.runRequest] Request not found: %s", targetPath))
 			return goja.Undefined()
 		}
+		// Run on a copy so the sub-request's scripts cannot alter the loaded
+		// request, and restore the caller's req/res bindings afterwards.
+		subReq = subReq.Clone()
+		outer, outerRes := sr.cur, sr.vm.Get("res")
+		defer func() {
+			if outer != nil {
+				sr.bindReqObject(outer)
+			}
+			if outerRes != nil {
+				sr.vm.Set("res", outerRes)
+			}
+		}()
 		_ = sr.RunPreRequest(subReq)
 		subResp, err := ExecuteRequest(subReq, sr.coll)
 		if err != nil {
@@ -177,6 +185,7 @@ func (sr *ScriptRunner) initEnvironment() {
 }
 
 func (sr *ScriptRunner) bindReqObject(req *BrunoRequest) {
+	sr.cur = req
 	reqObj := sr.vm.NewObject()
 	reqObj.Set("getUrl", func(call goja.FunctionCall) goja.Value {
 		return sr.vm.ToValue(Interpolate(req.URL, sr.coll))

@@ -1,0 +1,83 @@
+meta {
+  name: Get User
+  type: http
+  seq: 2
+  tags: [
+    smoke
+  ]
+}
+
+get {
+  url: {{baseUrl}}/users/:id?expand=roles&page=1
+  body: json
+  auth: oauth2
+}
+
+params:query {
+  expand: roles
+  page: 1
+  ~debug: true
+}
+
+params:path {
+  id: {{userId}}
+}
+
+headers {
+  Accept: application/json
+  ~X-Off: 1
+}
+
+auth:oauth2 {
+  grant_type: password
+  access_token_url: https://auth.example.com/token
+  username: {{user}}
+  password: {{pass}}
+}
+
+body:json {
+  {
+    "filter": {
+      "active": true,
+      "note": "braces } in strings {"
+    }
+  }
+}
+
+body:text {
+  plain text alternative
+}
+
+vars:pre-request {
+  local: 1
+}
+
+assert {
+  res.status: eq 200
+}
+
+script:pre-request {
+  if (!bru.getVar("token")) {
+    await bru.runRequest("auth/login");
+  }
+}
+
+script:post-response {
+  bru.setVar("userName", res.body.name);
+}
+
+tests {
+  test("status is 200", function() {
+    expect(res.status).to.equal(200);
+  });
+}
+
+settings {
+  encodeUrl: true
+}
+
+docs {
+  Returns a user.
+
+  Second paragraph.
+}

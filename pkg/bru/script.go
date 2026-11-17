@@ -1,10 +1,13 @@
 package bru
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/dop251/goja"
@@ -12,21 +15,85 @@ import (
 
 var awaitKeywordRe = regexp.MustCompile(`\bawait\s+`)
 
+// ScriptTimeout bounds the run time of each top-level script, including any
+// nested bru.runRequest calls, so an infinite loop cannot hang brui.
+var ScriptTimeout = 30 * time.Second
+
+// ErrScriptTimeout is returned when a script exceeds ScriptTimeout.
+var ErrScriptTimeout = errors.New("script timed out")
+
 type ScriptRunner struct {
-	vm   *goja.Runtime
-	coll *BrunoCollection
-	logs []ConsoleLogEntry
-	cur  *BrunoRequest // request currently bound to the `req` global
+	vm    *goja.Runtime
+	coll  *BrunoCollection
+	logs  []ConsoleLogEntry
+	cur   *BrunoRequest // request currently bound to the `req` global
+	ctx   context.Context
+	depth int // nesting level of script runs (bru.runRequest re-enters)
 }
 
 func NewScriptRunner(coll *BrunoCollection) *ScriptRunner {
+	return NewScriptRunnerContext(context.Background(), coll)
+}
+
+// NewScriptRunnerContext returns a runner whose scripts and HTTP calls are
+// aborted when ctx is cancelled.
+func NewScriptRunnerContext(ctx context.Context, coll *BrunoCollection) *ScriptRunner {
 	sr := &ScriptRunner{
 		vm:   goja.New(),
 		coll: coll,
 		logs: []ConsoleLogEntry{},
+		ctx:  ctx,
 	}
 	sr.initEnvironment()
 	return sr
+}
+
+// run executes a user script. The outermost run arms the timeout and the
+// cancellation watcher, which interrupt the VM; nested runs share them.
+func (sr *ScriptRunner) run(script string) error {
+	if sr.depth == 0 {
+		if err := sr.ctx.Err(); err != nil {
+			return err
+		}
+		// finished guards against a late timer/cancel interrupting a later run.
+		var mu sync.Mutex
+		finished := false
+		interrupt := func(v any) {
+			mu.Lock()
+			defer mu.Unlock()
+			if !finished {
+				sr.vm.Interrupt(v)
+			}
+		}
+		timer := time.AfterFunc(ScriptTimeout, func() { interrupt(ErrScriptTimeout) })
+		stop := make(chan struct{})
+		go func() {
+			select {
+			case <-sr.ctx.Done():
+				interrupt(sr.ctx.Err())
+			case <-stop:
+			}
+		}()
+		defer func() {
+			mu.Lock()
+			finished = true
+			mu.Unlock()
+			timer.Stop()
+			close(stop)
+			sr.vm.ClearInterrupt()
+		}()
+	}
+	sr.depth++
+	defer func() { sr.depth-- }()
+
+	_, err := sr.vm.RunString(wrapUserScript(script))
+	var ie *goja.InterruptedError
+	if errors.As(err, &ie) {
+		if cause, ok := ie.Value().(error); ok {
+			return cause
+		}
+	}
+	return err
 }
 
 func (sr *ScriptRunner) GetLogs() []ConsoleLogEntry {
@@ -162,7 +229,7 @@ func (sr *ScriptRunner) initEnvironment() {
 			}
 		}()
 		_ = sr.RunPreRequest(subReq)
-		subResp, err := ExecuteRequest(subReq, sr.coll)
+		subResp, err := ExecuteRequestContext(sr.ctx, subReq, sr.coll)
 		if err != nil {
 			sr.log("error", fmt.Sprintf("[bru.runRequest] %s failed: %v", targetPath, err))
 			return goja.Undefined()
@@ -249,8 +316,9 @@ func (sr *ScriptRunner) RunPreRequest(req *BrunoRequest) error {
 
 	// Run collection pre-request first
 	if sr.coll != nil && sr.coll.CollectionPreRequestScript != "" {
-		if _, err := sr.vm.RunString(wrapUserScript(sr.coll.CollectionPreRequestScript)); err != nil {
+		if err := sr.run(sr.coll.CollectionPreRequestScript); err != nil {
 			sr.log("error", fmt.Sprintf("collection script error: %v", err))
+			return fmt.Errorf("collection pre-request script: %w", err)
 		}
 	}
 
@@ -259,9 +327,9 @@ func (sr *ScriptRunner) RunPreRequest(req *BrunoRequest) error {
 
 	// Run request pre-request
 	if req.PreRequestScript != "" {
-		if _, err := sr.vm.RunString(wrapUserScript(req.PreRequestScript)); err != nil {
+		if err := sr.run(req.PreRequestScript); err != nil {
 			sr.log("error", fmt.Sprintf("request script error: %v", err))
-			return err
+			return fmt.Errorf("pre-request script: %w", err)
 		}
 	}
 
@@ -293,9 +361,10 @@ func (sr *ScriptRunner) RunPostResponse(req *BrunoRequest, resp *HTTPResponse) e
 	sr.vm.Set("res", resObj)
 
 	if req.PostResponseScript != "" {
-		if _, err := sr.vm.RunString(wrapUserScript(req.PostResponseScript)); err != nil {
+		sr.bindReqObject(req)
+		if err := sr.run(req.PostResponseScript); err != nil {
 			sr.log("error", fmt.Sprintf("post-response script error: %v", err))
-			return err
+			return fmt.Errorf("post-response script: %w", err)
 		}
 	}
 	return nil

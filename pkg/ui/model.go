@@ -1,6 +1,8 @@
 package ui
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -44,7 +46,7 @@ type Model struct {
 	ActiveTab       string // "headers", "params", "body", "auth", "docs"
 	ActiveRespTab   string // "body", "headers"
 	LastResponse    *bru.HTTPResponse
-	ScriptRunner    *bru.ScriptRunner
+	ScriptLogs      []bru.ConsoleLogEntry // console output of the scripts run so far
 	StatusMsg       string
 	ModifiedRequests map[string]bool
 
@@ -95,14 +97,17 @@ type Model struct {
 	ReqScroll  int
 
 	// Async request execution
-	IsSending bool
+	IsSending  bool
+	cancelSend context.CancelFunc
 }
 
-// requestDoneMsg is delivered when an asynchronous HTTP request completes.
+// maxScriptLogs caps the retained script console output.
+const maxScriptLogs = 500
+
+// requestDoneMsg is delivered when a background request (scripts + HTTP)
+// completes.
 type requestDoneMsg struct {
-	req  *bru.BrunoRequest
-	resp *bru.HTTPResponse
-	err  error
+	result *bru.RunResult
 }
 
 // shortcut describes one entry of the context-sensitive help bar.
@@ -117,7 +122,6 @@ func NewModel(coll *bru.BrunoCollection) Model {
 		Theme:             theme.Mocha,
 		ActiveTab:         "headers",
 		ActiveRespTab:     "body",
-		ScriptRunner:      bru.NewScriptRunner(coll),
 		StatusMsg:         "Ready",
 		ExpandedFolders:   make(map[string]bool),
 		ModifiedRequests:  make(map[string]bool),
@@ -245,23 +249,17 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.handleMouse(msg)
 
 	case requestDoneMsg:
-		m.IsSending = false
-		if msg.err != nil {
-			m.StatusMsg = fmt.Sprintf("Error: %v", msg.err)
-			return m, nil
-		}
-		m.LastResponse = msg.resp
-		_ = m.ScriptRunner.RunPostResponse(msg.req, msg.resp)
-		m.RespScroll = 0
-		m.StatusMsg = fmt.Sprintf("Done: %s (%dms)", msg.resp.StatusText, msg.resp.DurationMs)
+		m.applyRunResult(msg.result)
 		return m, nil
 	}
 
 	return m, nil
 }
 
-// sendCurrentRequest commits any pending inline edit, runs pre-request scripts
-// synchronously and performs the HTTP call asynchronously so the UI never freezes.
+// sendCurrentRequest commits any pending inline edit and runs the whole
+// pipeline (pre-request scripts, HTTP call, post-response script) in the
+// background on private copies, so slow scripts or bru.runRequest calls never
+// freeze the UI and never race with it. Esc cancels it.
 func (m *Model) sendCurrentRequest() tea.Cmd {
 	if m.SelectedRequest == nil {
 		m.StatusMsg = "No request selected"
@@ -276,13 +274,56 @@ func (m *Model) sendCurrentRequest() tea.Cmd {
 	// Scripts run on a copy: req.setHeader/setUrl/... must affect only this
 	// execution, never the request in the editor (which may be saved to disk).
 	req := m.SelectedRequest.Clone()
-	coll := m.Coll
-	_ = m.ScriptRunner.RunPreRequest(req)
+	coll := m.Coll.CloneForExecution()
+	ctx, cancel := context.WithCancel(context.Background())
+	m.cancelSend = cancel
 	m.IsSending = true
-	m.StatusMsg = fmt.Sprintf("Sending %s %s...", req.Method, req.Name)
+	m.StatusMsg = fmt.Sprintf("Sending %s %s...  [Esc] Cancel", req.Method, req.Name)
 	return func() tea.Msg {
-		resp, err := bru.ExecuteRequest(req, coll)
-		return requestDoneMsg{req: req, resp: resp, err: err}
+		defer cancel()
+		return requestDoneMsg{result: bru.RunWithScripts(ctx, req, coll)}
+	}
+}
+
+// cancelCurrentRequest aborts the in-flight request, if any.
+func (m *Model) cancelCurrentRequest() {
+	if m.IsSending && m.cancelSend != nil {
+		m.cancelSend()
+		m.StatusMsg = "Cancelling request..."
+	}
+}
+
+// applyRunResult merges the outcome of a background run into the model. It
+// runs on the UI goroutine, the only place the live collection is mutated.
+func (m *Model) applyRunResult(r *bru.RunResult) {
+	m.IsSending = false
+	m.cancelSend = nil
+
+	if m.Coll.RuntimeVariables == nil {
+		m.Coll.RuntimeVariables = map[string]any{}
+	}
+	for k, v := range r.RuntimeVariables {
+		m.Coll.RuntimeVariables[k] = v
+	}
+	m.ScriptLogs = append(m.ScriptLogs, r.Logs...)
+	if over := len(m.ScriptLogs) - maxScriptLogs; over > 0 {
+		m.ScriptLogs = m.ScriptLogs[over:]
+	}
+
+	switch {
+	case errors.Is(r.Err, context.Canceled):
+		m.StatusMsg = "Request cancelled"
+	case errors.Is(r.Err, bru.ErrScriptTimeout):
+		m.StatusMsg = fmt.Sprintf("Error: %v (limit %s)", r.Err, bru.ScriptTimeout)
+	case r.Err != nil:
+		m.StatusMsg = fmt.Sprintf("Error: %v", r.Err)
+	default:
+		m.LastResponse = r.Response
+		m.RespScroll = 0
+		m.StatusMsg = fmt.Sprintf("Done: %s (%dms)", r.Response.StatusText, r.Response.DurationMs)
+		if r.PostScriptErr != nil {
+			m.StatusMsg += fmt.Sprintf("  |  %v", r.PostScriptErr)
+		}
 	}
 }
 
@@ -451,10 +492,7 @@ func (m *Model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 					if clickCol < 0 {
 						clickCol = 0
 					}
-					if clickCol > len(m.URLEditText) {
-						clickCol = len(m.URLEditText)
-					}
-					m.URLCursor = clickCol
+					m.URLCursor = runeOffset(m.URLEditText, clickCol)
 					m.updateAutocomplete()
 					m.StatusMsg = "Editing URL. [Enter/Esc] Done  [Ctrl+S] Save"
 				}
@@ -510,10 +548,11 @@ func (m *Model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 				if clickCol < 0 {
 					clickCol = 0
 				}
-				if targetLineIdx < len(lines) && clickCol > len(lines[targetLineIdx]) {
-					clickCol = len(lines[targetLineIdx])
+				if targetLineIdx < len(lines) {
+					m.ContentCursor = offset + runeOffset(lines[targetLineIdx], clickCol)
+				} else {
+					m.ContentCursor = offset
 				}
-				m.ContentCursor = offset + clickCol
 				return *m, nil
 			}
 
@@ -609,15 +648,14 @@ func (m *Model) handleURLEditKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	case tea.KeyBackspace:
 		if m.URLCursor > 0 && len(m.URLEditText) > 0 {
-			m.URLEditText = m.URLEditText[:m.URLCursor-1] + m.URLEditText[m.URLCursor:]
-			m.URLCursor--
+			m.URLEditText, m.URLCursor = deleteBefore(m.URLEditText, m.URLCursor)
 			m.updateAutocomplete()
 		}
 		return *m, nil
 
 	case tea.KeyDelete:
 		if m.URLCursor < len(m.URLEditText) {
-			m.URLEditText = m.URLEditText[:m.URLCursor] + m.URLEditText[m.URLCursor+1:]
+			m.URLEditText = deleteAfter(m.URLEditText, m.URLCursor)
 			m.updateAutocomplete()
 		}
 		return *m, nil
@@ -632,7 +670,7 @@ func (m *Model) handleURLEditKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return *m, nil
 		}
 		if m.URLCursor > 0 {
-			m.URLCursor--
+			m.URLCursor = prevBoundary(m.URLEditText, m.URLCursor)
 			m.updateAutocomplete()
 		}
 		return *m, nil
@@ -647,7 +685,7 @@ func (m *Model) handleURLEditKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return *m, nil
 		}
 		if m.URLCursor < len(m.URLEditText) {
-			m.URLCursor++
+			m.URLCursor = nextBoundary(m.URLEditText, m.URLCursor)
 			m.updateAutocomplete()
 		}
 		return *m, nil
@@ -809,10 +847,7 @@ func (m *Model) moveContentCursorUp() {
 	text := m.ContentEditText
 	cur := m.ContentCursor
 	lineStart := strings.LastIndex(text[:cur], "\n")
-	col := cur
-	if lineStart != -1 {
-		col = cur - (lineStart + 1)
-	}
+	col := runeCol(text[lineStart+1:], cur-(lineStart+1))
 	if lineStart <= 0 {
 		m.ContentCursor = 0
 		return
@@ -827,11 +862,7 @@ func (m *Model) moveContentCursorUp() {
 		prevLineStart = prevLineStart + 1
 		prevLineLen = prevLineEnd - prevLineStart
 	}
-	targetCol := col
-	if targetCol > prevLineLen {
-		targetCol = prevLineLen
-	}
-	m.ContentCursor = prevLineStart + targetCol
+	m.ContentCursor = prevLineStart + runeOffset(text[prevLineStart:prevLineStart+prevLineLen], col)
 }
 
 func (m *Model) moveContentCursorDown() {
@@ -841,10 +872,7 @@ func (m *Model) moveContentCursorDown() {
 		return
 	}
 	lineStart := strings.LastIndex(text[:cur], "\n")
-	col := cur
-	if lineStart != -1 {
-		col = cur - (lineStart + 1)
-	}
+	col := runeCol(text[lineStart+1:], cur-(lineStart+1))
 	nextNL := strings.Index(text[cur:], "\n")
 	if nextNL == -1 {
 		m.ContentCursor = len(text)
@@ -858,11 +886,7 @@ func (m *Model) moveContentCursorDown() {
 	} else {
 		nextLineLen = nextNextNL
 	}
-	targetCol := col
-	if targetCol > nextLineLen {
-		targetCol = nextLineLen
-	}
-	m.ContentCursor = nextLineStart + targetCol
+	m.ContentCursor = nextLineStart + runeOffset(text[nextLineStart:nextLineStart+nextLineLen], col)
 }
 
 func (m *Model) handleContentEditKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
@@ -890,28 +914,27 @@ func (m *Model) handleContentEditKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	case tea.KeyBackspace:
 		if m.ContentCursor > 0 && len(m.ContentEditText) > 0 {
-			m.ContentEditText = m.ContentEditText[:m.ContentCursor-1] + m.ContentEditText[m.ContentCursor:]
-			m.ContentCursor--
+			m.ContentEditText, m.ContentCursor = deleteBefore(m.ContentEditText, m.ContentCursor)
 			m.saveTabContent()
 		}
 		return *m, nil
 
 	case tea.KeyDelete:
 		if m.ContentCursor < len(m.ContentEditText) {
-			m.ContentEditText = m.ContentEditText[:m.ContentCursor] + m.ContentEditText[m.ContentCursor+1:]
+			m.ContentEditText = deleteAfter(m.ContentEditText, m.ContentCursor)
 			m.saveTabContent()
 		}
 		return *m, nil
 
 	case tea.KeyLeft:
 		if m.ContentCursor > 0 {
-			m.ContentCursor--
+			m.ContentCursor = prevBoundary(m.ContentEditText, m.ContentCursor)
 		}
 		return *m, nil
 
 	case tea.KeyRight:
 		if m.ContentCursor < len(m.ContentEditText) {
-			m.ContentCursor++
+			m.ContentCursor = nextBoundary(m.ContentEditText, m.ContentCursor)
 		}
 		return *m, nil
 
@@ -967,6 +990,9 @@ func (m *Model) handleNormalKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "q", "ctrl+c":
 		return *m, tea.Quit
+
+	case "esc":
+		m.cancelCurrentRequest()
 
 	case "up", "k":
 		if m.SelectedIdx > 0 {
@@ -1338,26 +1364,25 @@ func (m *Model) handleEnvPromptKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	case tea.KeyBackspace:
 		if m.EnvPromptCursor > 0 && len(m.EnvPromptText) > 0 {
-			m.EnvPromptText = m.EnvPromptText[:m.EnvPromptCursor-1] + m.EnvPromptText[m.EnvPromptCursor:]
-			m.EnvPromptCursor--
+			m.EnvPromptText, m.EnvPromptCursor = deleteBefore(m.EnvPromptText, m.EnvPromptCursor)
 		}
 		return *m, nil
 
 	case tea.KeyDelete:
 		if m.EnvPromptCursor < len(m.EnvPromptText) {
-			m.EnvPromptText = m.EnvPromptText[:m.EnvPromptCursor] + m.EnvPromptText[m.EnvPromptCursor+1:]
+			m.EnvPromptText = deleteAfter(m.EnvPromptText, m.EnvPromptCursor)
 		}
 		return *m, nil
 
 	case tea.KeyLeft:
 		if m.EnvPromptCursor > 0 {
-			m.EnvPromptCursor--
+			m.EnvPromptCursor = prevBoundary(m.EnvPromptText, m.EnvPromptCursor)
 		}
 		return *m, nil
 
 	case tea.KeyRight:
 		if m.EnvPromptCursor < len(m.EnvPromptText) {
-			m.EnvPromptCursor++
+			m.EnvPromptCursor = nextBoundary(m.EnvPromptText, m.EnvPromptCursor)
 		}
 		return *m, nil
 
@@ -2108,21 +2133,12 @@ func (m Model) renderRequestPane(width, height int) string {
 
 	var urlDisplay string
 	if m.IsEditingURL {
-		curChar := " "
-		if m.URLCursor < len(m.URLEditText) {
-			curChar = string(m.URLEditText[m.URLCursor])
-		}
+		before, curChar, after := splitAtCursor(m.URLEditText, m.URLCursor)
 		curBlock := lipgloss.NewStyle().
 			Foreground(lipgloss.Color("#11111b")).
 			Background(lipgloss.Color(m.Theme.Accent)).
 			Bold(true).
 			Render(curChar)
-
-		before := m.URLEditText[:m.URLCursor]
-		after := ""
-		if m.URLCursor < len(m.URLEditText) {
-			after = m.URLEditText[m.URLCursor+1:]
-		}
 		urlDisplay = before + curBlock + after
 	} else {
 		urlDisplay = highlightVariables(req.URL, m.Theme)
@@ -2243,16 +2259,7 @@ func (m Model) renderRequestPane(width, height int) string {
 			if idx < len(rawLines) {
 				l := rawLines[idx]
 				if idx == curLine {
-					var cBefore, cChar, cAfter string
-					if curCol < len(l) {
-						cBefore = l[:curCol]
-						cChar = string(l[curCol])
-						cAfter = l[curCol+1:]
-					} else {
-						cBefore = l
-						cChar = " "
-						cAfter = ""
-					}
+					cBefore, cChar, cAfter := splitAtCursor(l, curCol)
 					curBlock := lipgloss.NewStyle().
 						Foreground(lipgloss.Color("#11111b")).
 						Background(lipgloss.Color(m.Theme.Accent)).
@@ -2460,12 +2467,27 @@ func (m *Model) headerHintText() string {
 		return "[Editing URL]   [Enter] Apply URL   [Esc] Cancel   [Ctrl+S] Save   [Ctrl+R] Send   [Tab] Autocomplete"
 	case m.IsEditingContent:
 		return fmt.Sprintf("[Editing %s]   [Esc] Done Editing   [Ctrl+S] Save   [Ctrl+R] Send   [Enter] Newline   [Tab] Indent", strings.ToUpper(m.ActiveTab))
+	case m.IsSending:
+		return "[Sending...]   [Esc] Cancel Request   [↑/↓] Select   [q] Quit"
 	default:
 		return "[↑/↓] Select   [Space] Send   [1-5] Tabs   [U] Edit URL   [E] Env   [S] Save   [q] Quit"
 	}
 }
 
 func (m *Model) currentShortcuts() []shortcut {
+	list := m.modeShortcuts()
+	inModal := m.IsNewReqPromptOpen || m.IsEnvPromptOpen || m.IsEnvModalOpen || m.IsEditingURL || m.IsEditingContent
+	if m.IsSending && !inModal {
+		cancel := shortcut{Label: "[Esc] Cancel", Action: func(m *Model) tea.Cmd {
+			m.cancelCurrentRequest()
+			return nil
+		}}
+		list = append([]shortcut{cancel}, list...)
+	}
+	return list
+}
+
+func (m *Model) modeShortcuts() []shortcut {
 	switch {
 	case m.IsNewReqPromptOpen:
 		list := []shortcut{
@@ -2971,21 +2993,12 @@ func (m Model) renderPromptModal() string {
 	title := titleStyle.Render(" " + m.EnvPromptTitle)
 	sep := lipgloss.NewStyle().Foreground(lipgloss.Color(m.Theme.Border)).Background(modalBg).Render(strings.Repeat("─", innerW))
 
-	curChar := " "
-	if m.EnvPromptCursor < len(m.EnvPromptText) {
-		curChar = string(m.EnvPromptText[m.EnvPromptCursor])
-	}
+	before, curChar, after := splitAtCursor(m.EnvPromptText, m.EnvPromptCursor)
 	curBlock := lipgloss.NewStyle().
 		Foreground(lipgloss.Color("#11111b")).
 		Background(lipgloss.Color(m.Theme.Accent)).
 		Bold(true).
 		Render(curChar)
-
-	before := m.EnvPromptText[:m.EnvPromptCursor]
-	after := ""
-	if m.EnvPromptCursor < len(m.EnvPromptText) {
-		after = m.EnvPromptText[m.EnvPromptCursor+1:]
-	}
 	inputContent := before + curBlock + after
 	inputLine := lipgloss.NewStyle().
 		Width(innerW - 4).

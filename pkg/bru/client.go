@@ -1,6 +1,7 @@
 package bru
 
 import (
+	"context"
 	"crypto/tls"
 	"encoding/json"
 	"errors"
@@ -32,6 +33,11 @@ func SetInsecureSkipVerify(insecure bool) {
 }
 
 func ExecuteRequest(req *BrunoRequest, coll *BrunoCollection) (*HTTPResponse, error) {
+	return ExecuteRequestContext(context.Background(), req, coll)
+}
+
+// ExecuteRequestContext sends the request; cancelling ctx aborts it.
+func ExecuteRequestContext(ctx context.Context, req *BrunoRequest, coll *BrunoCollection) (*HTTPResponse, error) {
 	// 1. Interpolate URL, substitute path params, append query params
 	finalURL := BuildURL(req, coll)
 
@@ -64,7 +70,7 @@ func ExecuteRequest(req *BrunoRequest, coll *BrunoCollection) (*HTTPResponse, er
 		}
 	}
 
-	httpReq, err := http.NewRequest(string(req.Method), finalURL, bodyReader)
+	httpReq, err := http.NewRequestWithContext(ctx, string(req.Method), finalURL, bodyReader)
 	if err != nil {
 		return nil, err
 	}

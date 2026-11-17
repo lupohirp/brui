@@ -32,18 +32,29 @@ type BruParam struct {
 	Type    string `json:"type,omitempty"` // ParamTypeQuery or ParamTypePath
 }
 
+// OAuth2Config mirrors Bruno's `auth:oauth2` block. Values are raw (may
+// contain {{variables}}); see Resolve for the interpolated form with defaults.
 type OAuth2Config struct {
-	GrantType       string `json:"grantType"` // "authorization_code", "client_credentials", "password"
-	AuthURL         string `json:"authUrl,omitempty"`
-	TokenURL        string `json:"tokenUrl"`
-	ClientID        string `json:"clientId"`
-	ClientSecret    string `json:"clientSecret,omitempty"`
-	Username        string `json:"username,omitempty"`
-	Password        string `json:"password,omitempty"`
-	Scope           string `json:"scope,omitempty"`
-	RedirectURI     string `json:"redirectUri,omitempty"`
-	RefreshTokenURL string `json:"refreshTokenUrl,omitempty"`
-	PKCE            bool   `json:"pkce"`
+	GrantType            string `json:"grantType"` // authorization_code | password | client_credentials
+	CallbackURL          string `json:"callbackUrl,omitempty"`
+	AuthorizationURL     string `json:"authorizationUrl,omitempty"`
+	AccessTokenURL       string `json:"accessTokenUrl"`
+	RefreshTokenURL      string `json:"refreshTokenUrl,omitempty"`
+	ClientID             string `json:"clientId"`
+	ClientSecret         string `json:"clientSecret,omitempty"`
+	Username             string `json:"username,omitempty"`
+	Password             string `json:"password,omitempty"`
+	Scope                string `json:"scope,omitempty"`
+	State                string `json:"state,omitempty"`
+	PKCE                 bool   `json:"pkce"`
+	CredentialsPlacement string `json:"credentialsPlacement,omitempty"` // body (default) | basic_auth_header
+	CredentialsID        string `json:"credentialsId,omitempty"`        // default "credentials"
+	TokenPlacement       string `json:"tokenPlacement,omitempty"`       // header (default) | url
+	TokenHeaderPrefix    string `json:"tokenHeaderPrefix,omitempty"`    // default "Bearer"
+	TokenQueryKey        string `json:"tokenQueryKey,omitempty"`        // default "access_token"
+	TokenSource          string `json:"tokenSource,omitempty"`          // access_token (default) | id_token
+	AutoFetchToken       bool   `json:"autoFetchToken"`
+	AutoRefreshToken     bool   `json:"autoRefreshToken"`
 }
 
 type BrunoRequest struct {

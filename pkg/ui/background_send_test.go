@@ -30,7 +30,13 @@ func TestSendRunsInBackgroundAndEscCancels(t *testing.T) {
 		t.Fatal("request should be in flight")
 	}
 	done := make(chan tea.Msg, 1)
-	go func() { done <- cmd() }()
+	go func() { // run only the request command of the batch, like Bubble Tea would
+		msg := cmd()
+		if b, ok := msg.(tea.BatchMsg); ok {
+			msg = b[0]()
+		}
+		done <- msg
+	}()
 
 	if !strings.Contains(m.View(), "[Esc] Cancel") {
 		t.Error("help should offer [Esc] Cancel while sending")

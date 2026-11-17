@@ -179,7 +179,6 @@ func IndexByName(name string) int {
 	return -1
 }
 
-
 func MethodColor(method string, t Theme) lipgloss.Color {
 	switch method {
 	case "GET":

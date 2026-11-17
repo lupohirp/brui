@@ -27,7 +27,7 @@ func TestScriptTimeoutInterruptsInfiniteLoop(t *testing.T) {
 	req := &BrunoRequest{Method: MethodGet, URL: "http://127.0.0.1:1", PreRequestScript: "while (true) {}"}
 
 	start := time.Now()
-	res := RunWithScripts(context.Background(), req, newTestColl(""))
+	res := RunWithScripts(context.Background(), req, newTestColl(""), RunOptions{})
 	if !errors.Is(res.Err, ErrScriptTimeout) {
 		t.Fatalf("want ErrScriptTimeout, got %v", res.Err)
 	}
@@ -40,7 +40,7 @@ func TestCancelInterruptsScript(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	time.AfterFunc(100*time.Millisecond, cancel)
 	req := &BrunoRequest{Method: MethodGet, URL: "http://127.0.0.1:1", PreRequestScript: "while (true) {}"}
-	if res := RunWithScripts(ctx, req, newTestColl("")); !errors.Is(res.Err, context.Canceled) {
+	if res := RunWithScripts(ctx, req, newTestColl(""), RunOptions{}); !errors.Is(res.Err, context.Canceled) {
 		t.Fatalf("want context.Canceled, got %v", res.Err)
 	}
 }
@@ -54,7 +54,7 @@ func TestCancelAbortsHTTP(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	time.AfterFunc(100*time.Millisecond, cancel)
 	start := time.Now()
-	res := RunWithScripts(ctx, &BrunoRequest{Method: MethodGet, URL: "{{base}}/slow"}, newTestColl(srv.URL))
+	res := RunWithScripts(ctx, &BrunoRequest{Method: MethodGet, URL: "{{base}}/slow"}, newTestColl(srv.URL), RunOptions{})
 	if !errors.Is(res.Err, context.Canceled) || time.Since(start) > 3*time.Second {
 		t.Fatalf("want quick cancellation, got %v after %s", res.Err, time.Since(start))
 	}
@@ -66,7 +66,7 @@ func TestPreRequestErrorAbortsRequest(t *testing.T) {
 	defer srv.Close()
 
 	req := &BrunoRequest{Method: MethodGet, URL: "{{base}}", PreRequestScript: `throw new Error("boom")`}
-	res := RunWithScripts(context.Background(), req, newTestColl(srv.URL))
+	res := RunWithScripts(context.Background(), req, newTestColl(srv.URL), RunOptions{})
 	if res.Err == nil || !strings.Contains(res.Err.Error(), "boom") || res.Response != nil {
 		t.Fatalf("want pre-request error, got err=%v resp=%v", res.Err, res.Response)
 	}
@@ -96,7 +96,7 @@ func TestRunWithScriptsOnCopies(t *testing.T) {
 
 	exec, snap := orig.Clone(), live.CloneForExecution()
 	time.Sleep(10 * time.Millisecond)
-	res := RunWithScripts(context.Background(), exec, snap)
+	res := RunWithScripts(context.Background(), exec, snap, RunOptions{})
 	time.Sleep(80 * time.Millisecond) // a stale timeout must not leak into later runs
 	if res.Err != nil || res.PostScriptErr != nil {
 		t.Fatalf("unexpected errors: %v / %v", res.Err, res.PostScriptErr)
@@ -126,7 +126,7 @@ func TestNestedRunRequest(t *testing.T) {
 
 	main := &BrunoRequest{Method: MethodGet, URL: "{{base}}/main",
 		PreRequestScript: `const r = await bru.runRequest("auth/login"); req.setHeader("X-After", String(r.status));`}
-	res := RunWithScripts(context.Background(), main, coll)
+	res := RunWithScripts(context.Background(), main, coll, RunOptions{})
 	if res.Err != nil {
 		t.Fatal(res.Err)
 	}
@@ -141,7 +141,7 @@ func TestNestedRunRequest(t *testing.T) {
 	// The nested run must not disarm the outer script's timeout.
 	withScriptTimeout(t, 300*time.Millisecond)
 	main.PreRequestScript = `bru.runRequest("auth/login"); while (true) {}`
-	if res := RunWithScripts(context.Background(), main, coll); !errors.Is(res.Err, ErrScriptTimeout) {
+	if res := RunWithScripts(context.Background(), main, coll, RunOptions{}); !errors.Is(res.Err, ErrScriptTimeout) {
 		t.Fatalf("outer timeout lost after nested run: %v", res.Err)
 	}
 }

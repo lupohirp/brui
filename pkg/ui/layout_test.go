@@ -68,12 +68,12 @@ func TestModelViewStrictDimensions(t *testing.T) {
 				Name: "Auth",
 				Requests: []*bru.BrunoRequest{
 					{
-						ID:       "r1",
-						Name:     "Login OTP",
-						Method:   bru.MethodPost,
-						URL:      "{{FQDN}}/{{Path}}/auth/otp",
-						Headers:  []bru.BruHeader{{Name: "Content-Type", Value: "application/json", Enabled: true}},
-						BodyType: "json",
+						ID:          "r1",
+						Name:        "Login OTP",
+						Method:      bru.MethodPost,
+						URL:         "{{FQDN}}/{{Path}}/auth/otp",
+						Headers:     []bru.BruHeader{{Name: "Content-Type", Value: "application/json", Enabled: true}},
+						BodyType:    "json",
 						BodyContent: `{"phone": "123456789"}`,
 					},
 					{
@@ -1009,6 +1009,3 @@ script:pre-request {
 		t.Fatalf("Expected pre-request script with nested braces to be preserved, got:\n%s", scriptBlock)
 	}
 }
-
-
-

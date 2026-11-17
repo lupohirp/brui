@@ -335,6 +335,9 @@ func ParseRequest(raw string) *BrunoRequest {
 				}
 			}
 
+		case "auth:oauth2":
+			req.AuthOAuth2 = parseOAuth2Block(block.Content)
+
 		case "auth:basic":
 			for _, line := range block.Content {
 				switch k, v := parseKeyValue(line); k {

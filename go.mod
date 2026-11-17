@@ -7,6 +7,7 @@ require (
 	github.com/charmbracelet/lipgloss v1.0.0
 	github.com/charmbracelet/x/ansi v0.8.0
 	github.com/dop251/goja v0.0.0-20261110204830-f493a2b600d6
+	github.com/ebitengine/purego v0.11.3
 	github.com/google/uuid v1.6.0
 	github.com/muesli/termenv v0.15.2
 )

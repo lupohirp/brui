@@ -12,6 +12,7 @@ import (
 	"github.com/lupohirp/brui/pkg/bru"
 	"github.com/lupohirp/brui/pkg/config"
 	"github.com/lupohirp/brui/pkg/ui"
+	"github.com/lupohirp/brui/pkg/weblogin"
 	"github.com/muesli/termenv"
 )
 
@@ -22,13 +23,18 @@ Open a Bruno collection (defaults to the current directory).
 Flags:
   -k, --insecure   skip TLS certificate verification (or "insecure": true in config)
   -h, --help       show this help
+  -v, --version    print the version
 
 Environment:
   HTTPS_PROXY, HTTP_PROXY, NO_PROXY   proxy settings for outgoing requests
   SSL_CERT_FILE                       extra CA bundle to trust
   BRUI_COLOR=256|16                   force a reduced color palette
   BRUI_CONFIG                         config file path (default ~/.config/brui/config.json)
+  BRUI_CHROME                         browser for the automatic OAuth2 login
 `
+
+// version is set at build time: -ldflags "-X main.version=1.2.3".
+var version = "dev"
 
 type options struct {
 	path     string
@@ -45,6 +51,8 @@ func parseArgs(args []string) (options, error) {
 			opts.insecure = true
 		case a == "-h" || a == "--help":
 			return opts, errHelp
+		case a == "-v" || a == "--version":
+			return opts, errVersion
 		case strings.HasPrefix(a, "-") && a != "-":
 			return opts, fmt.Errorf("unknown flag: %s", a)
 		case pathSet:
@@ -56,12 +64,22 @@ func parseArgs(args []string) (options, error) {
 	return opts, nil
 }
 
-var errHelp = errors.New("help requested")
+var (
+	errHelp    = errors.New("help requested")
+	errVersion = errors.New("version requested")
+)
 
 func main() {
+	if len(os.Args) > 1 && os.Args[1] == weblogin.HelperArg {
+		os.Exit(weblogin.RunHelper(os.Args[2:])) // the native OAuth2 login window
+	}
 	opts, err := parseArgs(os.Args[1:])
 	if errors.Is(err, errHelp) {
 		fmt.Print(usage)
+		return
+	}
+	if errors.Is(err, errVersion) {
+		fmt.Println("brui", version)
 		return
 	}
 	if err != nil {
@@ -99,6 +117,11 @@ func main() {
 		cfg.Theme = name
 		return config.Save(cfg)
 	}
+
+	// OAuth2 tokens survive restarts (0600 file in the user cache dir), so an
+	// authorization_code login is not needed on every launch.
+	m.OAuth = bru.NewOAuth2Manager(bru.DefaultTokenCachePath())
+	m.OAuth.LoginWindow = weblogin.Window()
 
 	if opts.insecure || cfg.Insecure {
 		bru.SetInsecureSkipVerify(true)

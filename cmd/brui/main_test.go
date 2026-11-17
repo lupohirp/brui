@@ -33,3 +33,11 @@ func TestParseArgs(t *testing.T) {
 		t.Errorf("-h should request help, got %v", err)
 	}
 }
+
+func TestVersionFlag(t *testing.T) {
+	for _, a := range []string{"-v", "--version"} {
+		if _, err := parseArgs([]string{a}); !errors.Is(err, errVersion) {
+			t.Fatalf("%s: want errVersion, got %v", a, err)
+		}
+	}
+}

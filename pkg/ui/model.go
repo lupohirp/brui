@@ -35,20 +35,20 @@ type AutocompleteCandidate struct {
 }
 
 type Model struct {
-	Coll            *bru.BrunoCollection
-	Theme           theme.Theme
-	Width           int
-	Height          int
-	SelectedIdx     int
-	SidebarOffset   int
-	VisibleItems    []TreeItem
-	ExpandedFolders map[string]bool
-	SelectedRequest *bru.BrunoRequest
-	ActiveTab       string // "headers", "params", "body", "auth", "docs"
-	ActiveRespTab   string // "body", "headers", "console"
-	LastResponse    *bru.HTTPResponse
-	ScriptLogs      []bru.ConsoleLogEntry // console output of the scripts run so far
-	StatusMsg       string
+	Coll             *bru.BrunoCollection
+	Theme            theme.Theme
+	Width            int
+	Height           int
+	SelectedIdx      int
+	SidebarOffset    int
+	VisibleItems     []TreeItem
+	ExpandedFolders  map[string]bool
+	SelectedRequest  *bru.BrunoRequest
+	ActiveTab        string // "headers", "params", "body", "auth", "docs"
+	ActiveRespTab    string // "body", "headers", "console"
+	LastResponse     *bru.HTTPResponse
+	ScriptLogs       []bru.ConsoleLogEntry // console output of the scripts run so far
+	StatusMsg        string
 	ModifiedRequests map[string]bool
 
 	// Inline Edit
@@ -100,6 +100,10 @@ type Model struct {
 	// Variable tooltip shown while the mouse hovers a {{variable}}
 	Hover *hoverInfo
 
+	// OAuth2 token cache and the open authorization_code login dialog
+	OAuth       *bru.OAuth2Manager
+	OAuthPrompt *oauthPromptState
+
 	// Async request execution
 	IsSending  bool
 	cancelSend context.CancelFunc
@@ -131,6 +135,7 @@ func NewModel(coll *bru.BrunoCollection) Model {
 		ExpandedFolders:   make(map[string]bool),
 		ModifiedRequests:  make(map[string]bool),
 		EnvModalFocusPane: "envs",
+		OAuth:             bru.NewOAuth2Manager(""),
 	}
 
 	// Expand all folders by default
@@ -234,6 +239,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case tea.KeyMsg:
 		m.Hover = nil
+		if m.OAuthPrompt != nil {
+			return m.handleOAuthPromptKeys(msg)
+		}
 		if m.IsNewReqPromptOpen {
 			return m.handleNewReqKeys(msg)
 		}
@@ -257,10 +265,25 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.Hover = nil
+		if m.OAuthPrompt != nil {
+			return m, nil // the login dialog is modal
+		}
 		return m.handleMouse(msg)
 
 	case requestDoneMsg:
 		m.applyRunResult(msg.result, msg.label)
+		return m, nil
+
+	case oauthPromptMsg:
+		m.OAuthPrompt = &oauthPromptState{Prompt: msg.prompt}
+		m.StatusMsg = "Complete the OAuth2 login in your browser"
+		if msg.prompt.Automatic {
+			m.StatusMsg = "Log in in the window that opened; brui continues automatically  [Esc] Cancel"
+		}
+		return m, waitForPrompt(msg.ch)
+
+	case oauthDoneMsg:
+		m.applyOAuthDone(msg)
 		return m, nil
 	}
 
@@ -291,10 +314,14 @@ func (m *Model) sendCurrentRequest() tea.Cmd {
 	m.IsSending = true
 	m.StatusMsg = fmt.Sprintf("Sending %s %s...  [Esc] Cancel", req.Method, req.Name)
 	label := fmt.Sprintf("%s %s", req.Method, req.Name)
-	return func() tea.Msg {
+	prompt, listen, done := newPromptChannel(ctx)
+	opts := bru.RunOptions{OAuth2: m.OAuth, Prompt: prompt}
+	run := func() tea.Msg {
 		defer cancel()
-		return requestDoneMsg{result: bru.RunWithScripts(ctx, req, coll), label: label}
+		defer done()
+		return requestDoneMsg{result: bru.RunWithScripts(ctx, req, coll, opts), label: label}
 	}
+	return tea.Batch(run, listen)
 }
 
 // cancelCurrentRequest aborts the in-flight request, if any.
@@ -310,6 +337,7 @@ func (m *Model) cancelCurrentRequest() {
 func (m *Model) applyRunResult(r *bru.RunResult, label string) {
 	m.IsSending = false
 	m.cancelSend = nil
+	m.OAuthPrompt = nil
 
 	if m.Coll.RuntimeVariables == nil {
 		m.Coll.RuntimeVariables = map[string]any{}
@@ -350,6 +378,9 @@ func (m *Model) applyRunResult(r *bru.RunResult, label string) {
 		m.LastResponse = r.Response
 		m.RespScroll = 0
 		m.StatusMsg = fmt.Sprintf("Done: %s (%dms)", r.Response.StatusText, r.Response.DurationMs)
+		if r.AuthNote != "" {
+			m.StatusMsg += "  |  OAuth2: " + r.AuthNote
+		}
 		if r.PostScriptErr != nil {
 			m.StatusMsg += fmt.Sprintf("  |  %v", r.PostScriptErr)
 		}
@@ -1025,6 +1056,9 @@ func (m *Model) handleNormalKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "esc":
 		m.cancelCurrentRequest()
 
+	case "o", "O":
+		return *m, m.fetchOAuthToken()
+
 	case "up", "k":
 		if m.SelectedIdx > 0 {
 			m.SelectedIdx--
@@ -1115,14 +1149,31 @@ func (m *Model) handleNormalKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 func (m *Model) executeCurrentRequest() {
 	// Synchronous variant (used by tests / non-interactive callers).
-	cmd := m.sendCurrentRequest()
+	for _, msg := range runCmdSync(m.sendCurrentRequest()) {
+		if done, ok := msg.(requestDoneMsg); ok {
+			nm, _ := m.Update(done)
+			*m = nm.(Model)
+		}
+	}
+}
+
+// runCmdSync runs cmd (expanding batches, in order) and returns its messages.
+func runCmdSync(cmd tea.Cmd) []tea.Msg {
 	if cmd == nil {
-		return
+		return nil
 	}
-	if done, ok := cmd().(requestDoneMsg); ok {
-		nm, _ := m.Update(done)
-		*m = nm.(Model)
+	msg := cmd()
+	if batch, ok := msg.(tea.BatchMsg); ok {
+		var out []tea.Msg
+		for _, c := range batch {
+			out = append(out, runCmdSync(c)...)
+		}
+		return out
 	}
+	if msg == nil {
+		return nil
+	}
+	return []tea.Msg{msg}
 }
 
 func (m *Model) selectCurrentItem() {
@@ -1731,7 +1782,6 @@ func (m *Model) createNewRequest() {
 	m.StatusMsg = fmt.Sprintf("Created %s %s [%s]", method, name, filename)
 }
 
-
 func (m *Model) cycleMethod() {
 	if m.SelectedRequest == nil {
 		return
@@ -1772,7 +1822,6 @@ func (m *Model) cycleTheme() {
 		}
 	}
 }
-
 
 func (m *Model) saveCollectionBru() error {
 	if m.Coll == nil || m.Coll.Path == "" {
@@ -1945,6 +1994,10 @@ func (m Model) baseView() string {
 	if m.IsEnvModalOpen {
 		modal := m.renderEnvironmentModal()
 		return overlayModal(base, modal, m.Width, m.Height)
+	}
+
+	if m.OAuthPrompt != nil {
+		return overlayModal(base, m.renderOAuthPromptModal(), m.Width, m.Height)
 	}
 
 	return base
@@ -2235,6 +2288,10 @@ func (m Model) renderRequestPane(width, height int) string {
 			contentLines = append(contentLines, " (Empty body)")
 		}
 	case "auth":
+		if oauthLines := m.oauthAuthTabLines(req); oauthLines != nil {
+			contentLines = append(contentLines, oauthLines...)
+			break
+		}
 		contentLines = append(contentLines, fmt.Sprintf(" Auth Mode: [%s]", req.AuthType))
 		if req.AuthBearerToken != "" {
 			contentLines = append(contentLines, fmt.Sprintf(" Bearer Token: %s", highlightVariables(req.AuthBearerToken, m.Theme)))
@@ -2489,6 +2546,10 @@ func (m *Model) headerHintText() string {
 		return "[Editing URL]   [Enter] Apply URL   [Esc] Cancel   [Ctrl+S] Save   [Ctrl+R] Send   [Tab] Autocomplete"
 	case m.IsEditingContent:
 		return fmt.Sprintf("[Editing %s]   [Esc] Done Editing   [Ctrl+S] Save   [Ctrl+R] Send   [Enter] Newline   [Tab] Indent", strings.ToUpper(m.ActiveTab))
+	case m.OAuthPrompt != nil && m.OAuthPrompt.Prompt.Automatic:
+		return "[OAuth2 Login]   Waiting for the login window...   [Esc] Cancel"
+	case m.OAuthPrompt != nil:
+		return "[OAuth2 Login]   [Enter] Submit   [Ctrl+Y] Copy URL   [Ctrl+O] Reopen Browser   [Esc] Cancel"
 	case m.IsSending:
 		return "[Sending...]   [Esc] Cancel Request   [↑/↓] Select   [q] Quit"
 	default:
@@ -2505,6 +2566,12 @@ func (m *Model) currentShortcuts() []shortcut {
 			return nil
 		}}
 		list = append([]shortcut{cancel}, list...)
+	}
+	if m.SelectedRequest != nil && !m.IsSending && !inModal && m.OAuthPrompt == nil &&
+		bru.EffectiveOAuth2(m.SelectedRequest, m.Coll) != nil {
+		list = append(list, shortcut{Label: "[O] OAuth2 Token", Action: func(m *Model) tea.Cmd {
+			return m.fetchOAuthToken()
+		}})
 	}
 	if m.ActiveRespTab == "console" && len(m.ScriptLogs) > 0 && !inModal {
 		list = append(list, shortcut{Label: "[Ctrl+L] Clear Console", Action: func(m *Model) tea.Cmd {
@@ -3005,7 +3072,6 @@ func (m Model) renderEnvironmentModal() string {
 	return modalBoxStyle.Render(strings.Join(allModalRows, "\n"))
 }
 
-
 func (m Model) renderPromptModal() string {
 	modalW := 56
 	if modalW > m.Width-4 {
@@ -3156,7 +3222,6 @@ func (m Model) renderNewReqModal() string {
 
 	return modalBoxStyle.Render(strings.Join(lines, "\n"))
 }
-
 
 func overlayModal(base string, modal string, screenW, screenH int) string {
 	modalLines := strings.Split(modal, "\n")

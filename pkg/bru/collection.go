@@ -102,6 +102,8 @@ func parseCollectionBru(filePath string, coll *BrunoCollection) {
 					coll.CollectionAuthBearerToken = v
 				}
 			}
+		case "auth:oauth2":
+			coll.CollectionAuthOAuth2 = parseOAuth2Block(b.Content)
 		case "script:pre-request":
 			coll.CollectionPreRequestScript = dedent(b.Content)
 		}

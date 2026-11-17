@@ -29,6 +29,7 @@ type ScriptRunner struct {
 	cur   *BrunoRequest // request currently bound to the `req` global
 	ctx   context.Context
 	depth int // nesting level of script runs (bru.runRequest re-enters)
+	opts  RunOptions
 }
 
 func NewScriptRunner(coll *BrunoCollection) *ScriptRunner {
@@ -229,6 +230,10 @@ func (sr *ScriptRunner) initEnvironment() {
 			}
 		}()
 		_ = sr.RunPreRequest(subReq)
+		if _, err := applyOAuth2(sr.ctx, subReq, sr.coll, sr.opts); err != nil {
+			sr.log("error", fmt.Sprintf("[bru.runRequest] %s oauth2: %v", targetPath, err))
+			return goja.Undefined()
+		}
 		subResp, err := ExecuteRequestContext(sr.ctx, subReq, sr.coll)
 		if err != nil {
 			sr.log("error", fmt.Sprintf("[bru.runRequest] %s failed: %v", targetPath, err))
@@ -249,6 +254,7 @@ func (sr *ScriptRunner) initEnvironment() {
 		})
 	})
 	sr.vm.Set("bru", bruObj)
+	sr.installShims()
 }
 
 func (sr *ScriptRunner) bindReqObject(req *BrunoRequest) {

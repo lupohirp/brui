@@ -1,8 +1,14 @@
 name: Release check
 
 # Validates .goreleaser.yaml and builds the .deb/.rpm/archives without
-# publishing. Run it by hand (Actions tab) before tagging.
-on: workflow_dispatch
+# publishing. Runs when the packaging files change, or by hand (Actions tab,
+# once this file is on the default branch) before tagging.
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - .goreleaser.yaml
+      - .github/workflows/release-check.yml
 
 jobs:
   snapshot:

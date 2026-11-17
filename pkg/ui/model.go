@@ -86,6 +86,9 @@ type Model struct {
 
 	// Theme
 	ThemeIdx int
+	// OnThemeChange, if set, is invoked with the new theme name whenever the
+	// user switches theme, so the choice can be persisted across sessions.
+	OnThemeChange func(name string) error
 
 	// Scrolling
 	RespScroll int
@@ -1675,10 +1678,27 @@ func (m *Model) cycleMethod() {
 	m.StatusMsg = fmt.Sprintf("Method changed to: %s", next)
 }
 
+// SetTheme selects a theme by name (case-insensitive). It reports whether the
+// name matched a known theme.
+func (m *Model) SetTheme(name string) bool {
+	idx := theme.IndexByName(name)
+	if idx < 0 {
+		return false
+	}
+	m.ThemeIdx = idx
+	m.Theme = theme.AllThemes[idx]
+	return true
+}
+
 func (m *Model) cycleTheme() {
 	m.ThemeIdx = (m.ThemeIdx + 1) % len(theme.AllThemes)
 	m.Theme = theme.AllThemes[m.ThemeIdx]
 	m.StatusMsg = fmt.Sprintf("Theme changed to: %s", m.Theme.Name)
+	if m.OnThemeChange != nil {
+		if err := m.OnThemeChange(m.Theme.Name); err != nil {
+			m.StatusMsg = fmt.Sprintf("Theme changed to: %s (not saved: %v)", m.Theme.Name, err)
+		}
+	}
 }
 
 

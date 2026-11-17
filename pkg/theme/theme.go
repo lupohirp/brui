@@ -1,6 +1,10 @@
 package theme
 
-import "github.com/charmbracelet/lipgloss"
+import (
+	"strings"
+
+	"github.com/charmbracelet/lipgloss"
+)
 
 type Theme struct {
 	Name        string
@@ -163,6 +167,17 @@ var Dracula = Theme{
 }
 
 var AllThemes = []Theme{Mocha, Macchiato, Frappe, Latte, TokyoNight, Dracula}
+
+// IndexByName returns the index in AllThemes of the theme with the given name
+// (case-insensitive), or -1 if not found.
+func IndexByName(name string) int {
+	for i, t := range AllThemes {
+		if strings.EqualFold(t.Name, name) {
+			return i
+		}
+	}
+	return -1
+}
 
 
 func MethodColor(method string, t Theme) lipgloss.Color {

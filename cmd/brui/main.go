@@ -8,6 +8,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/lupohirp/brui/pkg/bru"
+	"github.com/lupohirp/brui/pkg/config"
 	"github.com/lupohirp/brui/pkg/ui"
 	"github.com/muesli/termenv"
 )
@@ -31,6 +32,19 @@ func main() {
 	}
 
 	m := ui.NewModel(coll)
+
+	// Restore the last selected theme and persist future changes.
+	cfg, err := config.Load()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: could not read config: %v\n", err)
+	}
+	if cfg.Theme != "" && !m.SetTheme(cfg.Theme) {
+		fmt.Fprintf(os.Stderr, "Warning: unknown theme %q in config, using default\n", cfg.Theme)
+	}
+	m.OnThemeChange = func(name string) error {
+		cfg.Theme = name
+		return config.Save(cfg)
+	}
 
 	// Force 24-bit truecolor so Catppuccin hex palettes are rendered exactly.
 	// Without this, lipgloss downsamples to ANSI16/256 when COLORTERM is unset

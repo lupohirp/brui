@@ -26,7 +26,12 @@ jobs:
           version: "~> v2"
           args: release --snapshot --clean
       - name: Show the .deb dependencies
-        run: dpkg-deb -I dist/*.deb | grep -E 'Package|Version|Depends'
+        run: |
+          for f in dist/*.deb; do
+            echo "== $f"
+            dpkg-deb -I "$f" | grep -E 'Package|Version|Architecture|Depends'
+          done
+          rpm -qp --requires dist/*amd64.rpm 2>/dev/null || true
       - uses: actions/upload-artifact@v4
         with:
           name: packages

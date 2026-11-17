@@ -1,0 +1,46 @@
+# Release: git tag vX.Y.Z && git push --tags && goreleaser release --clean
+# Local test: goreleaser release --snapshot --clean
+version: 2
+
+project_name: brui
+
+builds:
+  - id: brui
+    main: ./cmd/brui
+    binary: brui
+    env:
+      - CGO_ENABLED=0 # pure Go everywhere, including the macOS WebKit login window (purego)
+    goos: [linux, darwin]
+    goarch: [amd64, arm64]
+    flags: [-trimpath]
+    ldflags:
+      - -s -w -X main.version={{ .Version }}
+
+archives:
+  - formats: [tar.gz]
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+
+checksum:
+  name_template: checksums.txt
+
+nfpms:
+  - id: brui
+    package_name: brui
+    homepage: https://github.com/lupohirp/brui
+    maintainer: Pasquale Lodise
+    description: Terminal UI for Bruno API collections
+    license: MIT
+    formats: [deb, rpm]
+    bindir: /usr/bin
+    # The automatic OAuth2 authorization_code login drives a Chromium-based
+    # browser. Any of these satisfies the dependency; on a machine with none,
+    # apt installs chromium (Debian) / chromium-browser (Ubuntu, via snap).
+    dependencies:
+      - chromium | chromium-browser | google-chrome-stable | microsoft-edge-stable | brave-browser
+    overrides:
+      rpm:
+        dependencies:
+          - (chromium or google-chrome-stable or microsoft-edge-stable or brave-browser)
+
+changelog:
+  sort: asc

@@ -9,6 +9,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -44,7 +45,7 @@ type Model struct {
 	ExpandedFolders map[string]bool
 	SelectedRequest *bru.BrunoRequest
 	ActiveTab       string // "headers", "params", "body", "auth", "docs"
-	ActiveRespTab   string // "body", "headers"
+	ActiveRespTab   string // "body", "headers", "console"
 	LastResponse    *bru.HTTPResponse
 	ScriptLogs      []bru.ConsoleLogEntry // console output of the scripts run so far
 	StatusMsg       string
@@ -96,6 +97,9 @@ type Model struct {
 	RespScroll int
 	ReqScroll  int
 
+	// Variable tooltip shown while the mouse hovers a {{variable}}
+	Hover *hoverInfo
+
 	// Async request execution
 	IsSending  bool
 	cancelSend context.CancelFunc
@@ -108,6 +112,7 @@ const maxScriptLogs = 500
 // completes.
 type requestDoneMsg struct {
 	result *bru.RunResult
+	label  string // e.g. "GET Get User", used as console separator
 }
 
 // shortcut describes one entry of the context-sensitive help bar.
@@ -228,6 +233,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case tea.KeyMsg:
+		m.Hover = nil
 		if m.IsNewReqPromptOpen {
 			return m.handleNewReqKeys(msg)
 		}
@@ -246,10 +252,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.handleNormalKeys(msg)
 
 	case tea.MouseMsg:
+		if msg.Action == tea.MouseActionMotion && msg.Button == tea.MouseButtonNone {
+			m.updateHover(msg.X, msg.Y)
+			return m, nil
+		}
+		m.Hover = nil
 		return m.handleMouse(msg)
 
 	case requestDoneMsg:
-		m.applyRunResult(msg.result)
+		m.applyRunResult(msg.result, msg.label)
 		return m, nil
 	}
 
@@ -279,9 +290,10 @@ func (m *Model) sendCurrentRequest() tea.Cmd {
 	m.cancelSend = cancel
 	m.IsSending = true
 	m.StatusMsg = fmt.Sprintf("Sending %s %s...  [Esc] Cancel", req.Method, req.Name)
+	label := fmt.Sprintf("%s %s", req.Method, req.Name)
 	return func() tea.Msg {
 		defer cancel()
-		return requestDoneMsg{result: bru.RunWithScripts(ctx, req, coll)}
+		return requestDoneMsg{result: bru.RunWithScripts(ctx, req, coll), label: label}
 	}
 }
 
@@ -295,7 +307,7 @@ func (m *Model) cancelCurrentRequest() {
 
 // applyRunResult merges the outcome of a background run into the model. It
 // runs on the UI goroutine, the only place the live collection is mutated.
-func (m *Model) applyRunResult(r *bru.RunResult) {
+func (m *Model) applyRunResult(r *bru.RunResult, label string) {
 	m.IsSending = false
 	m.cancelSend = nil
 
@@ -305,10 +317,27 @@ func (m *Model) applyRunResult(r *bru.RunResult) {
 	for k, v := range r.RuntimeVariables {
 		m.Coll.RuntimeVariables[k] = v
 	}
-	m.ScriptLogs = append(m.ScriptLogs, r.Logs...)
-	if over := len(m.ScriptLogs) - maxScriptLogs; over > 0 {
-		m.ScriptLogs = m.ScriptLogs[over:]
+	hasErrorLogs := false
+	if len(r.Logs) > 0 {
+		m.ScriptLogs = append(m.ScriptLogs, bru.ConsoleLogEntry{
+			Timestamp: time.Now().Format("15:04:05"), Type: "run", Message: label,
+		})
+		m.ScriptLogs = append(m.ScriptLogs, r.Logs...)
+		if over := len(m.ScriptLogs) - maxScriptLogs; over > 0 {
+			m.ScriptLogs = m.ScriptLogs[over:]
+		}
+		for _, l := range r.Logs {
+			hasErrorLogs = hasErrorLogs || l.Type == "error"
+		}
 	}
+	defer func() {
+		if hasErrorLogs && m.ActiveRespTab != "console" {
+			m.StatusMsg += "  (details in Console tab)"
+		}
+		if m.ActiveRespTab == "console" {
+			m.scrollConsoleToEnd()
+		}
+	}()
 
 	switch {
 	case errors.Is(r.Err, context.Canceled):
@@ -564,11 +593,13 @@ func (m *Model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 			relX := msg.X - sidebarW - 1
 			// Row 5+reqH+1: Response tabs & status
 			if msg.Y == 5+reqH+1 {
-				if relX >= 38 && relX < 53 {
-					m.ActiveRespTab = "body"
-				} else if relX >= 53 {
-					m.ActiveRespTab = "headers"
-				} else if m.LastResponse == nil {
+				for _, tr := range m.respTabRanges() {
+					if relX >= tr.start && relX < tr.end {
+						m.setRespTab(tr.id)
+						return *m, nil
+					}
+				}
+				if m.LastResponse == nil {
 					return *m, m.sendCurrentRequest()
 				}
 			}
@@ -1060,11 +1091,12 @@ func (m *Model) handleNormalKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.ActiveTab = "docs"
 
 	case "tab":
-		if m.ActiveRespTab == "body" {
-			m.ActiveRespTab = "headers"
-		} else {
-			m.ActiveRespTab = "body"
-		}
+		m.setRespTab(nextRespTab(m.ActiveRespTab))
+
+	case "ctrl+l":
+		m.ScriptLogs = nil
+		m.RespScroll = 0
+		m.StatusMsg = "Console cleared"
 
 	case "pgup", "ctrl+u":
 		if m.RespScroll > 0 {
@@ -1780,9 +1812,9 @@ func (m *Model) getAutocompleteVariables() []AutocompleteCandidate {
 	if m.Coll.ActiveEnvironment != "" {
 		for _, env := range m.Coll.Environments {
 			if env.Name == m.Coll.ActiveEnvironment {
-				for k, v := range env.Variables {
+				for _, k := range sortedKeys(env.Variables) {
 					if !seen[k] {
-						list = append(list, AutocompleteCandidate{Name: k, Type: "env", Val: v})
+						list = append(list, AutocompleteCandidate{Name: k, Type: "env", Val: env.Variables[k]})
 						seen[k] = true
 					}
 				}
@@ -1790,9 +1822,14 @@ func (m *Model) getAutocompleteVariables() []AutocompleteCandidate {
 		}
 	}
 
-	for k, v := range m.Coll.RuntimeVariables {
+	runtimeKeys := make([]string, 0, len(m.Coll.RuntimeVariables))
+	for k := range m.Coll.RuntimeVariables {
+		runtimeKeys = append(runtimeKeys, k)
+	}
+	sort.Strings(runtimeKeys)
+	for _, k := range runtimeKeys {
 		if !seen[k] {
-			list = append(list, AutocompleteCandidate{Name: k, Type: "runtime", Val: fmt.Sprintf("%v", v)})
+			list = append(list, AutocompleteCandidate{Name: k, Type: "runtime", Val: fmt.Sprintf("%v", m.Coll.RuntimeVariables[k])})
 			seen[k] = true
 		}
 	}
@@ -1878,7 +1915,8 @@ func (m *Model) acceptAutocomplete() {
 	m.ACSelectedIdx = 0
 }
 
-func (m Model) View() string {
+// baseView renders the screen without transient overlays (tooltips).
+func (m Model) baseView() string {
 	if m.Width <= 0 || m.Height <= 0 {
 		return "Loading brui..."
 	}
@@ -2329,40 +2367,24 @@ func (m Model) renderResponsePane(width, height int) string {
 		innerH = 2
 	}
 
-	var line1 string
-	if m.LastResponse == nil {
-		line1 = " Status: [ Idle ]  Press [Space] or [Enter] to send request."
-	} else {
-		r := m.LastResponse
-		statusColor := m.Theme.Success
-		if r.Status >= 400 {
-			statusColor = m.Theme.Error
-		}
-		stBadge := lipgloss.NewStyle().Foreground(lipgloss.Color(statusColor)).Bold(true).Render(fmt.Sprintf("%d %s", r.Status, r.StatusText))
-		sub := lipgloss.NewStyle().Foreground(lipgloss.Color(m.Theme.Subtext))
-		tabB := "[ 1:Body ]"
-		tabH := "  2:Headers  "
-		if m.ActiveRespTab == "headers" {
-			tabB = "  1:Body  "
-			tabH = "[ 2:Headers ]"
-		}
-		line1 = fmt.Sprintf(" %s   %s   %s   %s   %s", stBadge, sub.Render(fmt.Sprintf("Time: %dms", r.DurationMs)), sub.Render(fmt.Sprintf("Size: %dB", r.SizeBytes)), tabB, tabH)
-	}
-
+	line1 := m.respStatusPrefix() + "   " + strings.Join(m.respTabLabels(), " ")
 	line1 = padAndPaint(line1, innerW, m.Theme.Fg, m.Theme.Bg)
 	sepLine := padAndPaint(lipgloss.NewStyle().Foreground(lipgloss.Color(m.Theme.Border)).Render(strings.Repeat("─", innerW)), innerW, m.Theme.Fg, m.Theme.Bg)
 
 	var contentLines []string
-	if m.LastResponse != nil {
-		if m.ActiveRespTab == "headers" {
-			for k, v := range m.LastResponse.Headers {
-				contentLines = append(contentLines, fmt.Sprintf(" %s: %s", k, v))
-			}
-		} else {
-			bodyRows := strings.Split(m.LastResponse.Body, "\n")
-			for _, br := range bodyRows {
-				contentLines = append(contentLines, " "+br)
-			}
+	switch {
+	case m.ActiveRespTab == "console":
+		contentLines = m.consoleLines()
+	case m.LastResponse == nil:
+		contentLines = []string{" Press [Space] or [Enter] to send the request."}
+	case m.ActiveRespTab == "headers":
+		// Sorted: map order is random and the view re-renders on every mouse move.
+		for _, k := range sortedKeys(m.LastResponse.Headers) {
+			contentLines = append(contentLines, fmt.Sprintf(" %s: %s", k, m.LastResponse.Headers[k]))
+		}
+	default:
+		for _, br := range strings.Split(m.LastResponse.Body, "\n") {
+			contentLines = append(contentLines, " "+br)
 		}
 	}
 
@@ -2483,6 +2505,13 @@ func (m *Model) currentShortcuts() []shortcut {
 			return nil
 		}}
 		list = append([]shortcut{cancel}, list...)
+	}
+	if m.ActiveRespTab == "console" && len(m.ScriptLogs) > 0 && !inModal {
+		list = append(list, shortcut{Label: "[Ctrl+L] Clear Console", Action: func(m *Model) tea.Cmd {
+			m.ScriptLogs = nil
+			m.RespScroll = 0
+			return nil
+		}})
 	}
 	return list
 }
@@ -3130,7 +3159,6 @@ func (m Model) renderNewReqModal() string {
 
 
 func overlayModal(base string, modal string, screenW, screenH int) string {
-	baseLines := strings.Split(base, "\n")
 	modalLines := strings.Split(modal, "\n")
 
 	modalH := len(modalLines)
@@ -3156,25 +3184,16 @@ func overlayModal(base string, modal string, screenW, screenH int) string {
 		startCol = 0
 	}
 
-	for r := 0; r < modalH && startRow+r < len(baseLines); r++ {
-		mLine := modalLines[r]
-		bLine := baseLines[startRow+r]
+	return overlayAt(base, modal, startRow, startCol, screenW)
+}
 
-		left := ansi.Truncate(bLine, startCol, "")
-		leftW := ansi.StringWidth(left)
-		if leftW < startCol {
-			left += strings.Repeat(" ", startCol-leftW)
-		}
-
-		right := ansi.TruncateLeft(bLine, startCol+modalW, "")
-		rightW := ansi.StringWidth(right)
-		remain := screenW - (startCol + modalW)
-		if remain > 0 && rightW < remain {
-			right += strings.Repeat(" ", remain-rightW)
-		}
-
-		baseLines[startRow+r] = left + mLine + right
+// sortedKeys returns the keys of a string map in lexical order, for
+// deterministic rendering.
+func sortedKeys(mp map[string]string) []string {
+	keys := make([]string, 0, len(mp))
+	for k := range mp {
+		keys = append(keys, k)
 	}
-
-	return strings.Join(baseLines, "\n")
+	sort.Strings(keys)
+	return keys
 }

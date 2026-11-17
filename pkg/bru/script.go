@@ -148,19 +148,19 @@ func (sr *ScriptRunner) initEnvironment() {
 	// console object
 	consoleObj := sr.vm.NewObject()
 	consoleObj.Set("log", func(call goja.FunctionCall) goja.Value {
-		sr.log("info", formatArgs(call.Arguments))
+		sr.log("info", sr.formatArgs(call.Arguments))
 		return goja.Undefined()
 	})
 	consoleObj.Set("info", func(call goja.FunctionCall) goja.Value {
-		sr.log("info", formatArgs(call.Arguments))
+		sr.log("info", sr.formatArgs(call.Arguments))
 		return goja.Undefined()
 	})
 	consoleObj.Set("warn", func(call goja.FunctionCall) goja.Value {
-		sr.log("warn", formatArgs(call.Arguments))
+		sr.log("warn", sr.formatArgs(call.Arguments))
 		return goja.Undefined()
 	})
 	consoleObj.Set("error", func(call goja.FunctionCall) goja.Value {
-		sr.log("error", formatArgs(call.Arguments))
+		sr.log("error", sr.formatArgs(call.Arguments))
 		return goja.Undefined()
 	})
 	sr.vm.Set("console", consoleObj)
@@ -370,10 +370,38 @@ func (sr *ScriptRunner) RunPostResponse(req *BrunoRequest, resp *HTTPResponse) e
 	return nil
 }
 
-func formatArgs(args []goja.Value) string {
-	var parts []string
+// formatArgs renders console.* arguments like Node does: strings verbatim,
+// objects/arrays as indented JSON, errors as "Name: message", joined by spaces.
+func (sr *ScriptRunner) formatArgs(args []goja.Value) string {
+	parts := make([]string, 0, len(args))
 	for _, a := range args {
-		parts = append(parts, a.String())
+		parts = append(parts, sr.formatValue(a))
 	}
-	return fmt.Sprint(parts)
+	return strings.Join(parts, " ")
+}
+
+func (sr *ScriptRunner) formatValue(v goja.Value) string {
+	switch {
+	case v == nil || goja.IsUndefined(v):
+		return "undefined"
+	case goja.IsNull(v):
+		return "null"
+	}
+	obj, ok := v.(*goja.Object)
+	if !ok {
+		return v.String()
+	}
+	switch obj.ClassName() {
+	case "Error", "Function", "RegExp", "Date":
+		return obj.String()
+	}
+	stringify, ok := goja.AssertFunction(sr.vm.Get("JSON").ToObject(sr.vm).Get("stringify"))
+	if !ok {
+		return obj.String()
+	}
+	out, err := stringify(goja.Undefined(), obj, goja.Undefined(), sr.vm.ToValue(2))
+	if err != nil || goja.IsUndefined(out) { // e.g. circular structures
+		return obj.String()
+	}
+	return out.String()
 }

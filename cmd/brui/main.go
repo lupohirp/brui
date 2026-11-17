@@ -120,7 +120,10 @@ func main() {
 		}
 	}
 
-	p := tea.NewProgram(m, tea.WithAltScreen(), tea.WithMouseCellMotion())
+	p := tea.NewProgram(m, tea.WithAltScreen(),
+		// All-motion mouse tracking reports hover (not just drags), used to
+		// show the value of the {{variable}} under the pointer.
+		tea.WithMouseAllMotion())
 
 	if _, err := p.Run(); err != nil {
 		fmt.Fprintf(os.Stderr, "Error running brui: %v\n", err)

@@ -145,3 +145,30 @@ func TestNestedRunRequest(t *testing.T) {
 		t.Fatalf("outer timeout lost after nested run: %v", res.Err)
 	}
 }
+
+func TestConsoleFormatting(t *testing.T) {
+	sr := NewScriptRunner(newTestColl(""))
+	req := &BrunoRequest{PreRequestScript: `
+		console.log("hi", 42, true, null, undefined);
+		console.log({a: 1, b: [1, 2]});
+		const c = {}; c.self = c; console.warn(c);
+		console.error(new Error("bad"));`}
+	if err := sr.RunPreRequest(req); err != nil {
+		t.Fatal(err)
+	}
+	logs := sr.GetLogs()
+	want := []string{
+		"hi 42 true null undefined",
+		"{\n  \"a\": 1,\n  \"b\": [\n    1,\n    2\n  ]\n}",
+		"[object Object]",
+		"Error: bad",
+	}
+	if len(logs) != len(want) {
+		t.Fatalf("logs: %+v", logs)
+	}
+	for i, w := range want {
+		if logs[i].Message != w {
+			t.Errorf("log %d: want %q, got %q", i, w, logs[i].Message)
+		}
+	}
+}

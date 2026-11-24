@@ -35,13 +35,19 @@ type AutocompleteCandidate struct {
 }
 
 type Model struct {
-	Coll             *bru.BrunoCollection
-	Theme            theme.Theme
-	Width            int
-	Height           int
-	SelectedIdx      int
-	SidebarOffset    int
-	Search           *searchState // explorer search, nil when closed
+	Coll          *bru.BrunoCollection
+	Theme         theme.Theme
+	Width         int
+	Height        int
+	SelectedIdx   int
+	SidebarOffset int
+	Search        *searchState // explorer search, nil when closed
+
+	// In-flight indicator (spinner.go).
+	spinGen          int
+	spinFrame        int
+	sendStarted      time.Time
+	sendLabel        string
 	VisibleItems     []TreeItem
 	ExpandedFolders  map[string]bool
 	SelectedRequest  *bru.BrunoRequest
@@ -298,6 +304,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case oauthDoneMsg:
 		m.applyOAuthDone(msg)
 		return m, nil
+
+	case spinnerTickMsg:
+		cmd := m.onSpinnerTick(msg) // before returning m: it updates the frame
+		return m, cmd
 	}
 
 	return m, nil
@@ -334,7 +344,7 @@ func (m *Model) sendCurrentRequest() tea.Cmd {
 		defer done()
 		return requestDoneMsg{result: bru.RunWithScripts(ctx, req, coll, opts), label: label}
 	}
-	return tea.Batch(run, listen)
+	return tea.Batch(run, listen, m.startSpinner(label))
 }
 
 // cancelCurrentRequest aborts the in-flight request, if any.
@@ -2517,6 +2527,8 @@ func (m Model) renderResponsePane(width, height int) string {
 
 	var contentLines []string
 	switch {
+	case m.IsSending && m.ActiveRespTab != "console":
+		contentLines = m.spinnerLines(innerW, max(innerH-2, 0))
 	case m.ActiveRespTab == "console":
 		contentLines = m.consoleLines()
 	case m.ActiveRespTab == "cookies":

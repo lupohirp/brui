@@ -89,7 +89,7 @@ func (m *Model) fetchOAuthToken() tea.Cmd {
 		tok, err := om.Fetch(ctx, req, coll, prompt)
 		return oauthDoneMsg{token: tok, err: err}
 	}
-	return tea.Batch(run, listen)
+	return tea.Batch(run, listen, m.startSpinner("Getting OAuth2 token"))
 }
 
 func (m *Model) applyOAuthDone(msg oauthDoneMsg) {

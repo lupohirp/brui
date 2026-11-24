@@ -7,12 +7,13 @@ import (
 	"os"
 	"regexp"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
 )
 
-var varRegex = regexp.MustCompile(`\{\{([a-zA-Z0-9_$-]+)\}\}`)
+var varRegex = regexp.MustCompile(`\{\{([a-zA-Z0-9_$.-]+)\}\}`)
 
 func GetVariable(varName string, coll *BrunoCollection) (string, bool) {
 	val, _, ok := LookupVariable(varName, coll)
@@ -34,14 +35,26 @@ func LookupVariable(varName string, coll *BrunoCollection) (value, source string
 		return fmt.Sprintf("%v", val), SourceRuntime, true
 	}
 
-	// 2. Active environment
-	if coll.ActiveEnvironment != "" {
-		for _, env := range coll.Environments {
-			if env.Name == coll.ActiveEnvironment {
-				if val, ok := env.Variables[varName]; ok {
-					return val, SourceEnv, true
-				}
+	// {{process.env.NAME}}: the collection's .env file, then the OS.
+	if name, ok := strings.CutPrefix(varName, "process.env."); ok {
+		if val, ok := coll.DotEnv[name]; ok {
+			return val, SourceProcess, true
+		}
+		if val, ok := os.LookupEnv(name); ok {
+			return val, SourceProcess, true
+		}
+		return "", "", false
+	}
+
+	// 2. Active environment (secrets come from the secret store)
+	if env := coll.ActiveEnv(); env != nil {
+		if env.IsSecret(varName) {
+			if val, _, ok := coll.Secrets.Value(coll.Path, env.Name, varName); ok {
+				return val, SourceSecret, true
 			}
+		}
+		if val, ok := env.Variables[varName]; ok {
+			return val, SourceEnv, true
 		}
 	}
 
@@ -51,6 +64,19 @@ func LookupVariable(varName string, coll *BrunoCollection) (value, source string
 	}
 
 	return "", "", false
+}
+
+// ActiveEnv returns the active environment, or nil.
+func (c *BrunoCollection) ActiveEnv() *BrunoEnvironment {
+	if c.ActiveEnvironment == "" {
+		return nil
+	}
+	for _, env := range c.Environments {
+		if env.Name == c.ActiveEnvironment {
+			return env
+		}
+	}
+	return nil
 }
 
 // IsDynamicVariable reports whether name is generated at send time

@@ -88,6 +88,7 @@ func (c *BrunoCollection) CloneForExecution() *BrunoCollection {
 	cp.Environments = make([]*BrunoEnvironment, len(c.Environments))
 	for i, e := range c.Environments {
 		ec := *e
+		ec.SecretNames = append([]string(nil), e.SecretNames...)
 		ec.Variables = make(map[string]string, len(e.Variables))
 		for k, v := range e.Variables {
 			ec.Variables[k] = v

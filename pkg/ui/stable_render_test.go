@@ -13,7 +13,7 @@ func TestViewIsDeterministic(t *testing.T) {
 	m := hoverModel()
 	m.LastResponse = &bru.HTTPResponse{Status: 200, StatusText: "200 OK", Body: `{"a":1}`,
 		Headers: map[string]string{"Content-Type": "json", "Date": "x", "Server": "s", "Vary": "v", "X-A": "1", "X-B": "2", "X-C": "3"}}
-	for _, tab := range []string{"body", "headers", "console"} {
+	for _, tab := range []string{"body", "headers", "console", "cookies"} {
 		m.ActiveRespTab = tab
 		first := m.View()
 		for i := 0; i < 30; i++ {

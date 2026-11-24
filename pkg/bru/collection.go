@@ -32,6 +32,10 @@ func LoadCollection(rootPath string) (*BrunoCollection, error) {
 		parseCollectionBru(collBruPath, coll)
 	}
 
+	// .env at the collection root, for {{process.env.NAME}} (Bruno's way of
+	// keeping secrets out of the collection).
+	coll.DotEnv = parseDotEnvFile(filepath.Join(absPath, ".env"))
+
 	// 2. Check bruno.json
 	brunoJSONPath := filepath.Join(absPath, "bruno.json")
 	if data, err := os.ReadFile(brunoJSONPath); err == nil {
@@ -125,6 +129,10 @@ func parseEnvironmentFile(filePath, name string) *BrunoEnvironment {
 	env.rawBlocks = ParseBruBlocks(string(data))
 	env.rawTail = extraTrailingNewlines(string(data))
 	for _, b := range env.rawBlocks {
+		if b.key() == "vars:secret" {
+			env.SecretNames = append(env.SecretNames, parseSecretNames(b.Content)...)
+			continue
+		}
 		if b.key() != "vars" {
 			continue
 		}
@@ -235,8 +243,9 @@ func SerializeCollectionBru(coll *BrunoCollection) string {
 }
 
 // SerializeEnvironment renders an environment file. Existing variables keep
-// their position, disabled (~) variables and other blocks such as
-// `vars:secret [...]` are preserved, and new variables are appended sorted.
+// their position, disabled (~) variables and unknown blocks are preserved,
+// new variables are appended sorted, and `vars:secret [...]` lists the
+// secret names (their values are never written here).
 func SerializeEnvironment(env *BrunoEnvironment) string {
 	var lines []string
 	emitted := map[string]bool{}
@@ -267,7 +276,14 @@ func SerializeEnvironment(env *BrunoEnvironment) string {
 		}
 	}
 
+	var origSecret *BruBlock
+	for i := range env.rawBlocks {
+		if env.rawBlocks[i].key() == "vars:secret" {
+			origSecret = &env.rawBlocks[i]
+		}
+	}
 	m := newManagedBlocks()
 	m.set("vars", &BruBlock{Header: "vars", Content: lines})
+	m.set("vars:secret", secretBlock(env, origSecret))
 	return m.render(env.rawBlocks, BruBlock.key) + env.rawTail
 }

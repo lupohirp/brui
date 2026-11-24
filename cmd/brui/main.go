@@ -31,6 +31,7 @@ Environment:
   BRUI_COLOR=256|16                   force a reduced color palette
   BRUI_CONFIG                         config file path (default ~/.config/brui/config.json)
   BRUI_CHROME                         browser for the automatic OAuth2 login
+  BRUI_BRUNO_SECRETS                  Bruno's secrets.json (default: the Bruno app data)
 `
 
 // version is set at build time: -ldflags "-X main.version=1.2.3".
@@ -120,6 +121,9 @@ func main() {
 
 	// OAuth2 tokens survive restarts (0600 file in the user cache dir), so an
 	// authorization_code login is not needed on every launch.
+	coll.Secrets = bru.DefaultSecretStore()
+	// Cookies from Set-Cookie are kept between sessions (encrypted, 0600).
+	bru.UseCookieJar(bru.NewCookieJar(bru.DefaultCookieJarPath()))
 	m.OAuth = bru.NewOAuth2Manager(bru.DefaultTokenCachePath())
 	m.OAuth.LoginWindow = weblogin.Window()
 

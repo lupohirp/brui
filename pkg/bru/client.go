@@ -23,7 +23,8 @@ func newHTTPClient(insecure bool) *http.Client {
 	if insecure {
 		t.TLSClientConfig = &tls.Config{InsecureSkipVerify: true}
 	}
-	return &http.Client{Timeout: 30 * time.Second, Transport: t}
+	// The jar stores Set-Cookie (also from redirects) and sends cookies back.
+	return &http.Client{Timeout: 30 * time.Second, Transport: t, Jar: cookieJar}
 }
 
 // SetInsecureSkipVerify disables (or re-enables) TLS certificate verification.
@@ -154,6 +155,7 @@ func ExecuteRequestContext(ctx context.Context, req *BrunoRequest, coll *BrunoCo
 		Headers:    respHeaders,
 		Body:       rawBody,
 		IsJSON:     isJSON,
+		Cookies:    resp.Cookies(),
 	}, nil
 }
 

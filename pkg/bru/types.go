@@ -1,5 +1,7 @@
 package bru
 
+import "net/http"
+
 type HttpMethod string
 
 const (
@@ -111,6 +113,9 @@ type BrunoEnvironment struct {
 	Name      string            `json:"name"`
 	FilePath  string            `json:"filePath,omitempty"`
 	Variables map[string]string `json:"variables"`
+	// SecretNames lists the secret variables (`vars:secret`); their values
+	// live in the SecretStore, never in the .bru file.
+	SecretNames []string `json:"secretNames,omitempty"`
 
 	rawBlocks []BruBlock
 	rawTail   string
@@ -129,6 +134,10 @@ type BrunoCollection struct {
 	CollectionAuthBearerToken  string              `json:"collectionAuthBearerToken,omitempty"`
 	CollectionAuthOAuth2       *OAuth2Config       `json:"collectionAuthOAuth2,omitempty"`
 	CollectionPreRequestScript string              `json:"collectionPreRequestScript,omitempty"`
+	// DotEnv holds the collection's .env file, used by {{process.env.NAME}}.
+	DotEnv map[string]string `json:"-"`
+	// Secrets resolves secret environment variables; nil disables them.
+	Secrets *SecretStore `json:"-"`
 
 	collectionBlocks []BruBlock
 	collectionTail   string
@@ -142,6 +151,8 @@ type HTTPResponse struct {
 	Headers    map[string]string `json:"headers"`
 	Body       string            `json:"body"`
 	IsJSON     bool              `json:"isJson"`
+	// Cookies set by the final response (Set-Cookie), already stored in the jar.
+	Cookies []*http.Cookie `json:"-"`
 }
 
 type ConsoleLogEntry struct {

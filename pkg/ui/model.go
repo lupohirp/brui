@@ -18,7 +18,7 @@ import (
 	"github.com/lupohirp/brui/pkg/theme"
 )
 
-var varRegex = regexp.MustCompile(`\{\{([a-zA-Z0-9_$-]+)\}\}`)
+var varRegex = regexp.MustCompile(`\{\{([a-zA-Z0-9_$.-]+)\}\}`)
 
 type TreeItem struct {
 	Type     string // "folder" or "request"
@@ -45,7 +45,7 @@ type Model struct {
 	ExpandedFolders  map[string]bool
 	SelectedRequest  *bru.BrunoRequest
 	ActiveTab        string // "headers", "params", "body", "auth", "docs"
-	ActiveRespTab    string // "body", "headers", "console"
+	ActiveRespTab    string // "body", "headers", "console", "cookies"
 	LastResponse     *bru.HTTPResponse
 	ScriptLogs       []bru.ConsoleLogEntry // console output of the scripts run so far
 	StatusMsg        string
@@ -79,6 +79,7 @@ type Model struct {
 	EnvPromptCursor     int
 	EnvPromptAction     string // "edit_var", "new_var_name", "new_var_val", "new_env"
 	EnvPromptTempKey    string
+	EnvPromptReveal     bool // show the value of a secret being edited
 
 	// New Request Prompt
 	IsNewReqPromptOpen bool
@@ -95,6 +96,7 @@ type Model struct {
 
 	// Scrolling
 	RespScroll int
+	bodyCache  *bodyCache // rendered response body (shared by Model copies)
 	ReqScroll  int
 
 	// Variable tooltip shown while the mouse hovers a {{variable}}
@@ -131,6 +133,7 @@ func NewModel(coll *bru.BrunoCollection) Model {
 		Theme:             theme.Mocha,
 		ActiveTab:         "headers",
 		ActiveRespTab:     "body",
+		bodyCache:         &bodyCache{},
 		StatusMsg:         "Ready",
 		ExpandedFolders:   make(map[string]bool),
 		ModifiedRequests:  make(map[string]bool),
@@ -1128,6 +1131,12 @@ func (m *Model) handleNormalKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.setRespTab(nextRespTab(m.ActiveRespTab))
 
 	case "ctrl+l":
+		if m.ActiveRespTab == "cookies" {
+			bru.ActiveCookieJar().Clear()
+			m.RespScroll = 0
+			m.StatusMsg = "All cookies deleted"
+			break
+		}
 		m.ScriptLogs = nil
 		m.RespScroll = 0
 		m.StatusMsg = "Console cleared"
@@ -1231,12 +1240,7 @@ func (m *Model) getSelectedEnvVarKeys() []string {
 	if env == nil {
 		return nil
 	}
-	var keys []string
-	for k := range env.Variables {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-	return keys
+	return envVarKeys(env)
 }
 
 func (m *Model) saveEnvironment(env *bru.BrunoEnvironment) error {
@@ -1325,15 +1329,7 @@ func (m *Model) handleEnvModalKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if m.EnvModalFocusPane == "vars" {
 			varKeys := m.getSelectedEnvVarKeys()
 			if len(varKeys) > 0 && m.EnvModalVarIdx >= 0 && m.EnvModalVarIdx < len(varKeys) {
-				key := varKeys[m.EnvModalVarIdx]
-				env := m.getSelectedEnv()
-				val := env.Variables[key]
-				m.IsEnvPromptOpen = true
-				m.EnvPromptTitle = fmt.Sprintf("EDIT VARIABLE [%s]", key)
-				m.EnvPromptText = val
-				m.EnvPromptCursor = len(val)
-				m.EnvPromptAction = "edit_var"
-				m.EnvPromptTempKey = key
+				m.openVarEditor(m.getSelectedEnv(), varKeys[m.EnvModalVarIdx])
 			}
 		} else {
 			if m.EnvModalSelectedIdx == 0 {
@@ -1372,11 +1368,24 @@ func (m *Model) handleEnvModalKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				key := varKeys[m.EnvModalVarIdx]
 				env := m.getSelectedEnv()
 				delete(env.Variables, key)
+				if env.IsSecret(key) {
+					env.SetSecret(key, false)
+					_ = m.Coll.Secrets.Delete(m.Coll.Path, env.Name, key)
+				}
 				_ = m.saveEnvironment(env)
-				if m.EnvModalVarIdx >= len(env.Variables) && m.EnvModalVarIdx > 0 {
+				if m.EnvModalVarIdx >= len(envVarKeys(env)) && m.EnvModalVarIdx > 0 {
 					m.EnvModalVarIdx--
 				}
 				m.StatusMsg = fmt.Sprintf("Deleted variable [%s]", key)
+			}
+		}
+		return *m, nil
+
+	case "x", "X":
+		if m.EnvModalFocusPane == "vars" {
+			varKeys := m.getSelectedEnvVarKeys()
+			if m.EnvModalVarIdx >= 0 && m.EnvModalVarIdx < len(varKeys) {
+				m.toggleSecret(m.getSelectedEnv(), varKeys[m.EnvModalVarIdx])
 			}
 		}
 		return *m, nil
@@ -1396,6 +1405,10 @@ func (m *Model) handleEnvPromptKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.IsEnvPromptOpen = false
 		return *m, nil
 
+	case tea.KeyCtrlT:
+		m.EnvPromptReveal = !m.EnvPromptReveal
+		return *m, nil
+
 	case tea.KeyEnter:
 		val := m.EnvPromptText
 		switch m.EnvPromptAction {
@@ -1405,6 +1418,12 @@ func (m *Model) handleEnvPromptKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				env.Variables[m.EnvPromptTempKey] = val
 				_ = m.saveEnvironment(env)
 				m.StatusMsg = fmt.Sprintf("Updated [%s] = %s", m.EnvPromptTempKey, val)
+			}
+			m.IsEnvPromptOpen = false
+
+		case "edit_secret":
+			if env := m.getSelectedEnv(); env != nil {
+				m.StatusMsg = m.storeSecret(env, m.EnvPromptTempKey, val)
 			}
 			m.IsEnvPromptOpen = false
 
@@ -1578,15 +1597,7 @@ func (m *Model) handleEnvModalMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 				clickedVarIdx := relY - 3
 				if clickedVarIdx >= 0 && clickedVarIdx < len(varKeys) {
 					m.EnvModalVarIdx = clickedVarIdx
-					key := varKeys[clickedVarIdx]
-					env := m.getSelectedEnv()
-					val := env.Variables[key]
-					m.IsEnvPromptOpen = true
-					m.EnvPromptTitle = fmt.Sprintf("EDIT VARIABLE [%s]", key)
-					m.EnvPromptText = val
-					m.EnvPromptCursor = len(val)
-					m.EnvPromptAction = "edit_var"
-					m.EnvPromptTempKey = key
+					m.openVarEditor(m.getSelectedEnv(), varKeys[clickedVarIdx])
 					return *m, nil
 				}
 			}
@@ -1862,8 +1873,14 @@ func (m *Model) getAutocompleteVariables() []AutocompleteCandidate {
 		for _, env := range m.Coll.Environments {
 			if env.Name == m.Coll.ActiveEnvironment {
 				for _, k := range sortedKeys(env.Variables) {
-					if !seen[k] {
+					if !seen[k] && !env.IsSecret(k) {
 						list = append(list, AutocompleteCandidate{Name: k, Type: "env", Val: env.Variables[k]})
+						seen[k] = true
+					}
+				}
+				for _, k := range env.SecretNames {
+					if !seen[k] {
+						list = append(list, AutocompleteCandidate{Name: k, Type: "secret", Val: "••••••"})
 						seen[k] = true
 					}
 				}
@@ -2281,6 +2298,9 @@ func (m Model) renderRequestPane(width, height int) string {
 	case "body":
 		if req.BodyContent != "" {
 			bodyRows := strings.Split(req.BodyContent, "\n")
+			if strings.EqualFold(req.BodyType, "json") {
+				bodyRows = highlightJSONText(req.BodyContent, m.Theme)
+			}
 			for _, br := range bodyRows {
 				contentLines = append(contentLines, " "+br)
 			}
@@ -2432,6 +2452,8 @@ func (m Model) renderResponsePane(width, height int) string {
 	switch {
 	case m.ActiveRespTab == "console":
 		contentLines = m.consoleLines()
+	case m.ActiveRespTab == "cookies":
+		contentLines = m.cookieLines(innerW)
 	case m.LastResponse == nil:
 		contentLines = []string{" Press [Space] or [Enter] to send the request."}
 	case m.ActiveRespTab == "headers":
@@ -2440,9 +2462,7 @@ func (m Model) renderResponsePane(width, height int) string {
 			contentLines = append(contentLines, fmt.Sprintf(" %s: %s", k, m.LastResponse.Headers[k]))
 		}
 	default:
-		for _, br := range strings.Split(m.LastResponse.Body, "\n") {
-			contentLines = append(contentLines, " "+br)
-		}
+		contentLines = m.responseBodyLines(innerW)
 	}
 
 	bodyCapacity := innerH - 2
@@ -2539,7 +2559,7 @@ func (m *Model) headerHintText() string {
 		return "[Environment Prompt]   [Enter] Save   [Esc] Cancel"
 	case m.IsEnvModalOpen:
 		if m.EnvModalFocusPane == "vars" {
-			return "[Env Manager: Vars]   [↑/↓] Select   [Enter] Edit Value   [N] New Var   [D] Delete Var   [Tab] Envs Pane   [Esc] Close"
+			return "[Env Manager: Vars]   [↑/↓] Select   [Enter] Edit Value   [N] New Var   [X] Secret on/off   [D] Delete Var   [Tab] Envs Pane   [Esc] Close"
 		}
 		return "[Env Manager: Envs]   [↑/↓] Select   [Enter] Activate Env   [N] New Env   [Tab] Vars Pane   [Esc] Close"
 	case m.IsEditingURL:
@@ -2571,6 +2591,13 @@ func (m *Model) currentShortcuts() []shortcut {
 		bru.EffectiveOAuth2(m.SelectedRequest, m.Coll) != nil {
 		list = append(list, shortcut{Label: "[O] OAuth2 Token", Action: func(m *Model) tea.Cmd {
 			return m.fetchOAuthToken()
+		}})
+	}
+	if m.ActiveRespTab == "cookies" && len(bru.ActiveCookieJar().List()) > 0 && !inModal {
+		list = append(list, shortcut{Label: "[Ctrl+L] Delete All Cookies", Action: func(m *Model) tea.Cmd {
+			bru.ActiveCookieJar().Clear()
+			m.StatusMsg = "All cookies deleted"
+			return nil
 		}})
 	}
 	if m.ActiveRespTab == "console" && len(m.ScriptLogs) > 0 && !inModal {
@@ -2971,10 +2998,7 @@ func (m Model) renderEnvironmentModal() string {
 
 	var varKeys []string
 	if selectedEnv != nil {
-		for k := range selectedEnv.Variables {
-			varKeys = append(varKeys, k)
-		}
-		sort.Strings(varKeys)
+		varKeys = envVarKeys(selectedEnv)
 	}
 
 	if selectedEnv == nil {
@@ -2989,16 +3013,12 @@ func (m Model) renderEnvironmentModal() string {
 		rightLines = append(rightLines, rHeader)
 
 		for _, k := range varKeys {
-			val := selectedEnv.Variables[k]
-			line := fmt.Sprintf(" %s: %s", k, val)
-			if ansi.StringWidth(line) > rightW {
-				maxVal := rightW - len(k) - 4
-				if maxVal > 3 {
-					val = val[:maxVal-1] + "…"
-				}
-				line = fmt.Sprintf(" %s: %s", k, val)
+			if selectedEnv.IsSecret(k) {
+				rightLines = append(rightLines, m.secretVarLine(selectedEnv, k, rightW))
+				continue
 			}
-			rightLines = append(rightLines, line)
+			line := fmt.Sprintf(" %s: %s", k, selectedEnv.Variables[k])
+			rightLines = append(rightLines, ansi.Truncate(line, rightW, "…"))
 		}
 	}
 
@@ -3040,7 +3060,7 @@ func (m Model) renderEnvironmentModal() string {
 	if m.EnvModalFocusPane == "envs" {
 		footer = "[Tab] Focus Vars  [↑/↓] Select  [Enter] Activate  [N] New Env  [Esc] Close"
 	} else {
-		footer = "[Tab] Focus Envs  [↑/↓] Select  [Enter] Edit Val  [N] Add Var  [D] Del  [Esc] Close"
+		footer = "[Tab] Envs  [↑/↓] Select  [Enter] Edit  [N] Add  [X] Secret on/off  [D] Del  [Esc] Close"
 	}
 	footerTruncated := ansi.Truncate(footer, innerW-2, "")
 	visWFoot := ansi.StringWidth(footerTruncated)
@@ -3089,6 +3109,13 @@ func (m Model) renderPromptModal() string {
 	sep := lipgloss.NewStyle().Foreground(lipgloss.Color(m.Theme.Border)).Background(modalBg).Render(strings.Repeat("─", innerW))
 
 	before, curChar, after := splitAtCursor(m.EnvPromptText, m.EnvPromptCursor)
+	masked := m.EnvPromptAction == "edit_secret" && !m.EnvPromptReveal
+	if masked {
+		before, after = maskSecret(before), maskSecret(after)
+		if curChar != " " {
+			curChar = "•"
+		}
+	}
 	curBlock := lipgloss.NewStyle().
 		Foreground(lipgloss.Color("#11111b")).
 		Background(lipgloss.Color(m.Theme.Accent)).
@@ -3108,7 +3135,11 @@ func (m Model) renderPromptModal() string {
 		Background(modalBg).
 		Render("  " + inputLine)
 
-	footer := subtext.Render(" [Enter] Confirm   [Esc] Cancel")
+	footerText := " [Enter] Confirm   [Esc] Cancel"
+	if m.EnvPromptAction == "edit_secret" {
+		footerText = " [Enter] Save (encrypted, outside the collection)   [Ctrl+T] Show/Hide   [Esc] Cancel"
+	}
+	footer := subtext.Render(ansi.Truncate(footerText, innerW-2, "…"))
 	footerLine := lipgloss.NewStyle().Width(innerW).MaxWidth(innerW).Background(modalBg).Render(" " + footer)
 
 	lines := []string{

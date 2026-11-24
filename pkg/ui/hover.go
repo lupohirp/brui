@@ -3,6 +3,7 @@ package ui
 import (
 	"fmt"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
@@ -11,11 +12,12 @@ import (
 
 // hoverInfo describes the {{variable}} currently under the mouse pointer.
 type hoverInfo struct {
-	Name   string
-	Value  string
-	Source string // human-readable origin, empty when undefined
-	Found  bool
-	X, Y   int // pointer position
+	Name    string
+	Value   string
+	Source  string // human-readable origin, empty when undefined
+	Missing string // why an undefined variable has no value, if known
+	Found   bool
+	X, Y    int // pointer position
 }
 
 // View renders the screen plus, when hovering a variable, its tooltip.
@@ -51,8 +53,18 @@ func (m *Model) updateHover(x, y int) {
 			if val, src, ok := bru.LookupVariable(name, m.Coll); ok {
 				h.Found, h.Value = true, val
 				h.Source = src
-				if src == bru.SourceEnv {
+				switch src {
+				case bru.SourceEnv:
 					h.Source = "env: " + m.Coll.ActiveEnvironment
+				case bru.SourceSecret:
+					// Never shown on screen: only its length.
+					h.Source = "secret · env: " + m.Coll.ActiveEnvironment
+					h.Value = fmt.Sprintf("•••••••• (%d characters)", utf8.RuneCountInString(val))
+				}
+			} else if env := m.Coll.ActiveEnv(); env != nil && env.IsSecret(name) {
+				h.Missing = "secret not set: press [E], select it and press Enter"
+				if err := m.Coll.Secrets.Problem(m.Coll.Path, env.Name, name); err != nil {
+					h.Missing = "secret unreadable (" + err.Error() + ")"
 				}
 			}
 		}
@@ -97,7 +109,11 @@ func (m Model) overlayTooltip(base string) string {
 		}
 	} else {
 		errStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(t.Error)).Background(bg)
-		rows = append(rows, nameStyle.Render("{{"+h.Name+"}}"), errStyle.Render("undefined in the active environment"))
+		msg := "undefined in the active environment"
+		if h.Missing != "" {
+			msg = h.Missing
+		}
+		rows = append(rows, nameStyle.Render("{{"+h.Name+"}}"), errStyle.Render(ansi.Truncate(msg, maxW, "…")))
 	}
 
 	box := lipgloss.NewStyle().

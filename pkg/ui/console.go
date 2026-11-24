@@ -6,6 +6,7 @@ import (
 
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
+	"github.com/lupohirp/brui/pkg/bru"
 )
 
 // Response pane tabs, in Tab-key cycling order.
@@ -13,6 +14,7 @@ var respTabs = []struct{ id, label string }{
 	{"body", "Body"},
 	{"headers", "Headers"},
 	{"console", "Console"},
+	{"cookies", "Cookies"},
 }
 
 func nextRespTab(cur string) string {
@@ -70,6 +72,11 @@ func (m Model) respTabLabels() []string {
 				label = fmt.Sprintf("Console (%d, %d!)", n, errs)
 			} else if n > 0 {
 				label = fmt.Sprintf("Console (%d)", n)
+			}
+		}
+		if t.id == "cookies" {
+			if n := len(bru.ActiveCookieJar().List()); n > 0 {
+				label = fmt.Sprintf("Cookies (%d)", n)
 			}
 		}
 		if t.id == m.ActiveRespTab {

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"regexp"
 	"strings"
 	"sync"
@@ -166,8 +167,35 @@ func (sr *ScriptRunner) initEnvironment() {
 	})
 	sr.vm.Set("console", consoleObj)
 
+	// process.env: the OS environment overlaid with the collection's .env.
+	procEnv := map[string]string{}
+	for _, kv := range os.Environ() {
+		if k, v, ok := strings.Cut(kv, "="); ok {
+			procEnv[k] = v
+		}
+	}
+	for k, v := range sr.coll.DotEnv {
+		procEnv[k] = v
+	}
+	envObj := sr.vm.NewObject()
+	for k, v := range procEnv {
+		_ = envObj.Set(k, v)
+	}
+	procObj := sr.vm.NewObject()
+	_ = procObj.Set("env", envObj)
+	sr.vm.Set("process", procObj)
+
 	// bru object
 	bruObj := sr.vm.NewObject()
+	bruObj.Set("getProcessEnv", func(call goja.FunctionCall) goja.Value {
+		if len(call.Arguments) == 0 {
+			return goja.Undefined()
+		}
+		if v, ok := procEnv[call.Arguments[0].String()]; ok {
+			return sr.vm.ToValue(v)
+		}
+		return goja.Undefined()
+	})
 	bruObj.Set("getEnvVar", func(call goja.FunctionCall) goja.Value {
 		if len(call.Arguments) == 0 {
 			return goja.Undefined()

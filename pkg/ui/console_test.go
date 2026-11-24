@@ -50,9 +50,9 @@ func TestConsoleTab(t *testing.T) {
 		}
 	}
 
-	// Tab cycles body -> headers -> console -> body.
+	// Tab cycles body -> headers -> console -> cookies -> body.
 	m.ActiveRespTab = "body"
-	for _, want := range []string{"headers", "console", "body"} {
+	for _, want := range []string{"headers", "console", "cookies", "body"} {
 		nm, _ = m.Update(tea.KeyMsg{Type: tea.KeyTab})
 		m = nm.(Model)
 		if m.ActiveRespTab != want {

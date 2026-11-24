@@ -41,6 +41,7 @@ type Model struct {
 	Height           int
 	SelectedIdx      int
 	SidebarOffset    int
+	Search           *searchState // explorer search, nil when closed
 	VisibleItems     []TreeItem
 	ExpandedFolders  map[string]bool
 	SelectedRequest  *bru.BrunoRequest
@@ -167,6 +168,12 @@ func NewModel(coll *bru.BrunoCollection) Model {
 }
 
 func (m *Model) rebuildTree() {
+	if m.Search != nil && strings.TrimSpace(m.Search.Query) != "" {
+		m.VisibleItems = m.searchTree(m.Search.Query)
+		m.SelectedIdx = min(max(m.SelectedIdx, 0), max(len(m.VisibleItems)-1, 0))
+		m.syncSidebarOffset()
+		return
+	}
 	var items []TreeItem
 
 	for _, req := range m.Coll.Requests {
@@ -259,6 +266,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		if m.IsEditingContent {
 			return m.handleContentEditKeys(msg)
+		}
+		if m.Search != nil {
+			return m.handleSearchKeys(msg)
 		}
 		return m.handleNormalKeys(msg)
 
@@ -512,12 +522,20 @@ func (m *Model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 
 		// B. Sidebar (cols 0..sidebarW-1, rows 5..5+bodyH-1)
 		if msg.X < sidebarW && msg.Y >= 5 && msg.Y < 5+bodyH {
-			if msg.Y >= 6 && msg.Y < 5+bodyH-1 {
-				row := msg.Y - 6
-				targetIdx := m.SidebarOffset + row
+			firstRow := 6
+			if m.Search != nil {
+				firstRow++ // search box
+			}
+			if msg.Y >= firstRow && msg.Y < 5+bodyH-1 {
+				row := msg.Y - firstRow
+				targetIdx := m.sidebarViewOffset() + row
 				if targetIdx >= 0 && targetIdx < len(m.VisibleItems) {
 					m.SelectedIdx = targetIdx
 					it := m.VisibleItems[targetIdx]
+					if m.Search != nil {
+						m.acceptSearch()
+						return *m, nil
+					}
 					if it.Type == "folder" {
 						m.ExpandedFolders[it.Folder.ID] = !m.ExpandedFolders[it.Folder.ID]
 						m.rebuildTree()
@@ -1051,6 +1069,47 @@ func (m *Model) handleContentEditKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return *m, nil
 }
 
+// expandOrEnter (→): opens a closed folder, or moves into an open one.
+func (m *Model) expandOrEnter() {
+	if m.SelectedIdx < 0 || m.SelectedIdx >= len(m.VisibleItems) {
+		return
+	}
+	it := m.VisibleItems[m.SelectedIdx]
+	if it.Type != "folder" {
+		return
+	}
+	if !it.Expanded {
+		m.ExpandedFolders[it.Folder.ID] = true
+		m.rebuildTree()
+		return
+	}
+	if next := m.SelectedIdx + 1; next < len(m.VisibleItems) && m.VisibleItems[next].Depth > it.Depth {
+		m.SelectedIdx = next
+		m.selectCurrentItem()
+	}
+}
+
+// collapseOrParent (←): closes an open folder, otherwise selects the folder
+// containing the current item.
+func (m *Model) collapseOrParent() {
+	if m.SelectedIdx < 0 || m.SelectedIdx >= len(m.VisibleItems) {
+		return
+	}
+	it := m.VisibleItems[m.SelectedIdx]
+	if it.Type == "folder" && it.Expanded {
+		m.ExpandedFolders[it.Folder.ID] = false
+		m.rebuildTree()
+		return
+	}
+	for i := m.SelectedIdx - 1; i >= 0; i-- {
+		if p := m.VisibleItems[i]; p.Type == "folder" && p.Depth == it.Depth-1 {
+			m.SelectedIdx = i
+			m.selectCurrentItem()
+			return
+		}
+	}
+}
+
 func (m *Model) handleNormalKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "q", "ctrl+c":
@@ -1073,6 +1132,15 @@ func (m *Model) handleNormalKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.SelectedIdx++
 			m.selectCurrentItem()
 		}
+
+	case "/", "ctrl+f":
+		m.openSearch()
+
+	case "right", "l":
+		m.expandOrEnter()
+
+	case "left", "h":
+		m.collapseOrParent()
 
 	case "enter":
 		if m.SelectedIdx >= 0 && m.SelectedIdx < len(m.VisibleItems) {
@@ -1186,6 +1254,7 @@ func runCmdSync(cmd tea.Cmd) []tea.Msg {
 }
 
 func (m *Model) selectCurrentItem() {
+	m.syncSidebarOffset()
 	if m.SelectedIdx >= 0 && m.SelectedIdx < len(m.VisibleItems) {
 		it := m.VisibleItems[m.SelectedIdx]
 		if it.Type == "request" {
@@ -2082,22 +2151,20 @@ func (m Model) renderSidebar(width, height int) string {
 		innerH = 1
 	}
 
-	// Keep SelectedIdx in view
-	offset := m.SidebarOffset
-	if m.SelectedIdx < offset {
-		offset = m.SelectedIdx
-	} else if m.SelectedIdx >= offset+innerH {
-		offset = m.SelectedIdx - innerH + 1
+	offset := m.sidebarViewOffset()
+	var lines []string
+	if m.Search != nil {
+		lines = append(lines, m.searchBoxLine(innerW))
+		innerH--
+		if len(m.VisibleItems) == 0 {
+			lines = append(lines, padAndPaint("  no matching requests", innerW, m.Theme.Subtext, m.Theme.Bg))
+			innerH--
+		}
 	}
-	if offset < 0 {
-		offset = 0
-	}
-	m.SidebarOffset = offset
 
 	subtext := lipgloss.NewStyle().Foreground(lipgloss.Color(m.Theme.Subtext))
 	fStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(m.Theme.Accent)).Bold(true)
 
-	var lines []string
 	for r := 0; r < innerH; r++ {
 		idx := offset + r
 		if idx >= len(m.VisibleItems) {
@@ -2570,10 +2637,12 @@ func (m *Model) headerHintText() string {
 		return "[OAuth2 Login]   Waiting for the login window...   [Esc] Cancel"
 	case m.OAuthPrompt != nil:
 		return "[OAuth2 Login]   [Enter] Submit   [Ctrl+Y] Copy URL   [Ctrl+O] Reopen Browser   [Esc] Cancel"
+	case m.Search != nil:
+		return "[Search]   Type to filter   [↑/↓] Select   [Enter] Open   [Esc] Cancel"
 	case m.IsSending:
 		return "[Sending...]   [Esc] Cancel Request   [↑/↓] Select   [q] Quit"
 	default:
-		return "[↑/↓] Select   [Space] Send   [1-5] Tabs   [U] Edit URL   [E] Env   [S] Save   [q] Quit"
+		return "[↑/↓] Select   [←/→] Fold   [/] Search   [Space] Send   [1-5] Tabs   [U] Edit URL   [E] Env   [S] Save   [q] Quit"
 	}
 }
 
